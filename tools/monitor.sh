@@ -1,0 +1,1 @@
+watch -n .2 -d "df -h | grep nvme; python tools/nvidia-processes.py"
