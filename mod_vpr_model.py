@@ -222,7 +222,7 @@ class VPRModel(pl.LightningModule):
 
         if torch.isnan(descriptors).any():
             raise ValueError('NaNs in descriptors')
-        self.val_outputs[dataloader_idx].append(descriptors.detach().cpu())
+        self.val_outputs[dataloader_idx].append(descriptors.detach().cpu().to(dtype=torch.float32))
         return descriptors.detach().cpu()
     
     def on_validation_epoch_start(self):
@@ -281,9 +281,9 @@ class VPRModel(pl.LightningModule):
             )
             del r_list, q_list, feats, num_references, positives
 
-            self.log(f'{val_set_name}/R1', pitts_dict[1], prog_bar=False, logger=True)
-            self.log(f'{val_set_name}/R5', pitts_dict[5], prog_bar=False, logger=True)
-            self.log(f'{val_set_name}/R10', pitts_dict[10], prog_bar=False, logger=True)
+            self.log(f'{val_set_name}/R1', pitts_dict[1], prog_bar=False, logger=True, sync_dist=True)
+            self.log(f'{val_set_name}/R5', pitts_dict[5], prog_bar=False, logger=True, sync_dist=True)
+            self.log(f'{val_set_name}/R10', pitts_dict[10], prog_bar=False, logger=True, sync_dist=True)
         print('\n\n')
 
         # reset the outputs list
