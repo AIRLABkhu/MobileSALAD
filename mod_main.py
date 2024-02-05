@@ -3,7 +3,6 @@ import torch
 import pytorch_lightning as pl
 import pytorch_lightning.callbacks as pl_callbacks
 from pytorch_lightning.strategies import DeepSpeedStrategy
-from pytorch_lightning.strategies import DeepSpeedStrategy
 from pytorch_lightning import strategies
 
 from mod_vpr_model import VPRModel
@@ -21,7 +20,7 @@ if __name__ == '__main__':
     # torch.set_float32_matmul_precision('high')
     
     datamodule = GSVCitiesDataModule(
-        batch_size=16,
+        batch_size=8,
         img_per_place=4,
         min_img_per_place=4,
         shuffle_all=False, # shuffle all images or keep shuffling in-city only
@@ -79,6 +78,12 @@ if __name__ == '__main__':
         miner_margin=0.1,
         faiss_gpu=False
     )
+    state_dict = torch.load('weights/dino_salad.ckpt', map_location='cpu')
+    state_dict['backbone.predictor.in_conv.0.weight'] = model.backbone.predictor.in_conv[0].weight.data.cpu()
+    state_dict['backbone.predictor.in_conv.0.bias'] = model.backbone.predictor.in_conv[0].bias.data.cpu()
+    state_dict['backbone.selector.in_conv.0.weight'] = model.backbone.selector.in_conv[0].weight.data.cpu()
+    state_dict['backbone.selector.in_conv.0.bias'] = model.backbone.selector.in_conv[0].bias.data.cpu()
+    model.load_state_dict(state_dict)
 
     # model params saving using Pytorch Lightning
     # we save the best 3 models accoring to Recall@1 on pittsburg val
@@ -108,7 +113,7 @@ if __name__ == '__main__':
     #     log_every_n_steps=20,
     # )
     trainer = pl.Trainer(
-        # accelerator='gpu', 
+        accelerator='gpu', 
         # strategy = DeepSpeedStrategy(),
         strategy = 'ddp_find_unused_parameters_true',
         devices=-1,

@@ -71,12 +71,13 @@ class mod_DINOv2(nn.Module):
             num_trainable_blocks=4,
             norm_layer=False,
             return_token=False,
-            masking_rate: float=0.4
+            masking_rate: float=0.4,
         ):
         super().__init__()
 
         assert model_name in DINOV2_ARCHS.keys(), f'Unknown model name {model_name}'
         self.model = torch.hub.load('facebookresearch/dinov2', model_name)
+            
         self.num_channels = DINOV2_ARCHS[model_name]
         self.num_trainable_blocks = num_trainable_blocks
         self.norm_layer = norm_layer
@@ -94,7 +95,6 @@ class mod_DINOv2(nn.Module):
         self.predictor = Predictor(in_features=self.num_channels, out_features=1)
         self.selector = Predictor(in_features=self.num_channels, out_features=1)
         # self.predictor = Mlp(in_features=self.num_channels , out_features=1)
-
 
     def calc_cosine(
         self, 
