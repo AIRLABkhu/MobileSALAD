@@ -1,6 +1,7 @@
 from typing import Iterator
 import pytorch_lightning as pl
 import torch
+from torch import nn
 from torch.nn.parameter import Parameter
 from torch.optim import lr_scheduler, optimizer
 
@@ -84,11 +85,15 @@ class VPRModel(pl.LightningModule):
         
     # the forward pass of the lightning model
     def forward(self, x):
+        if self.training:
+            pr_f, pr_t, gt_f, gt_t = self.backbone(x)
+            out_pr = self.aggregator((pr_f, pr_t))
+            out_gt = self.aggregator((gt_f, gt_t))
+            return out_pr, out_gt
+        else:
+            pr_f, pr_t = self.backbone(x)
+            return self.aggregator((pr_f, pr_t))
 
-        f, t = self.backbone(x)
-        
-        return self.aggregator((f, t))
-        
         
     @utils.yield_as(list)
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
@@ -124,7 +129,6 @@ class VPRModel(pl.LightningModule):
         else:
             raise ValueError(f'Optimizer {self.optimizer} has not been added to "configure_optimizers()"')
         
-
         if self.lr_sched.lower() == 'multistep':
             scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=self.lr_sched_args['milestones'], gamma=self.lr_sched_args['gamma'])
         elif self.lr_sched.lower() == 'cosine':
@@ -146,27 +150,24 @@ class VPRModel(pl.LightningModule):
         self.lr_schedulers().step()
         
     #  The loss function call (this method will be called at each training iteration)
-    def loss_function(self, descriptors, labels, log_accuracy: bool=False):
-        
+    def loss_function(self, desc_pr, desc_gt, labels, log_accuracy: bool=False):
         # we mine the pairs/triplets if there is an online mining strategy
         if self.miner is not None:
-            miner_outputs = self.miner(descriptors, labels)
-            loss = self.loss_fn(descriptors, labels, miner_outputs)
+            miner_outputs = self.miner(desc_pr, labels)
+            loss = self.loss_fn(desc_pr, labels, miner_outputs)
             
             # calculate the % of trivial pairs/triplets 
             # which do not contribute in the loss value
-            nb_samples = descriptors.shape[0]
+            nb_samples = desc_pr.shape[0]
             nb_mined = len(set(miner_outputs[0].detach().cpu().numpy()))
             batch_acc = 1.0 - (nb_mined/nb_samples)
-            #contrastive,,,?
-
         else: # no online mining
-            loss = self.loss_fn(descriptors, labels)
+            loss = self.loss_fn(desc_pr, labels)
             batch_acc = 0.0
             if type(loss) == tuple: 
-                # somes losses do the online mining inside (they don't need a miner objet), 
+                # somes losses do the online mining inside (they don't need a miner object), 
                 # so they return the loss and the batch accuracy
-                # for example, if you are developping a new loss function, you might be better
+                # for example, if you are developing a new loss function, you might be better
                 # doing the online mining strategy inside the forward function of the loss class, 
                 # and return a tuple containing the loss value and the batch_accuracy (the % of valid pairs or triplets)
                 loss, batch_acc = loss
@@ -177,14 +178,9 @@ class VPRModel(pl.LightningModule):
             # log it
             self.log('b_acc', sum(self.batch_acc) /
                     len(self.batch_acc), prog_bar=True, logger=True)
-        
-        # simm_loss = self.criterion(pred_simm, simm)
-        
-        # split_pred = torch.chunk(pred_simm, chunks=2, dim=0)
-        # simm_loss += self.criterion(split_pred[0], split_pred[1])
-        # total_loss = loss + simm_loss
-
-        return loss
+            
+        distill_loss = nn.functional.mse_loss(desc_pr, desc_gt)
+        return loss + distill_loss
     
     # This is the training step that's executed at each iteration
     def training_step(self, batch, batch_idx):
@@ -193,34 +189,25 @@ class VPRModel(pl.LightningModule):
         # Note that GSVCities yields places (each containing N images)
         # which means the dataloader will return a batch containing BS places
         BS, N, ch, h, w = places.shape
-        assert N == 2  # Our method forces each place to have exactly two images in a mini-batch. 
+        # assert N == 2  # Our method forces each place to have exactly two images in a mini-batch. 
         
         # reshape places and labels
         # data 를 다시...
         images = places.view(BS*N, ch, h, w)
         labels = labels.view(-1)
-        # image_1, image_2 = torch.chunk(places, chunks=2, dim=1)
-        # image_1 = image_1.squeeze()
-        # image_2 = image_2.squeeze()
-        # images = torch.cat([image_1, image_2], dim=0)
-        
-        # label_1, label_2 = torch.chunk(labels, chunks=2, dim=1)
-        # label_1 = label_1.squeeze()
-        # label_2 = label_2.squeeze()
-        # labels = torch.cat([label_1, label_2])
 
         # Feed forward the ba6tch to the model
         # Here we are calling the method forward that we defined above
-        
-        descriptors = self(images) 
-        if torch.isnan(descriptors).any():
-            raise ValueError('NaNs in descriptors')
+
+        desc_pr, desc_gt = self(images) 
+        if torch.isnan(desc_pr).any():
+            raise ValueError('NaNs in descriptors (pruned)')
+        if torch.isnan(desc_gt).any():
+            raise ValueError('NaNs in descriptors (gt)')
 
         # Call the loss_function we defined above
-        loss = self.loss_function(descriptors, labels, log_accuracy=True) 
-        
+        loss = self.loss_function(desc_pr, desc_gt, labels, log_accuracy=True) 
         self.log('loss', loss.item(), logger=True, prog_bar=True)
-
         return {'loss': loss}
     
     def on_train_epoch_end(self):
@@ -231,7 +218,7 @@ class VPRModel(pl.LightningModule):
     # this is the way Pytorch Lghtning is made. All about modularity, folks.
     def validation_step(self, batch, batch_idx, dataloader_idx=None):
         places, _ = batch
-        descriptors  = self(places)
+        descriptors = self(places)
 
         if torch.isnan(descriptors).any():
             raise ValueError('NaNs in descriptors')
@@ -281,6 +268,8 @@ class VPRModel(pl.LightningModule):
 
             r_list = feats[ : num_references]
             q_list = feats[num_references : ]
+            print(r_list.dtype)
+            print(r_list[0].dtype)
             pitts_dict = utils.get_validation_recalls(
                 r_list=r_list, 
                 q_list=q_list,

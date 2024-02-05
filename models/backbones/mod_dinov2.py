@@ -11,7 +11,6 @@ DINOV2_ARCHS = {
 }
 
 class Mlp(nn.Module):
-
     def __init__(self, in_features, out_features=None, act_layer=nn.GELU, drop=0., group=1):
         super().__init__()
         out_features = out_features or in_features
@@ -134,16 +133,15 @@ class mod_DINOv2(nn.Module):
         cosine_sim = - torch.nn.functional.cosine_similarity(f.unsqueeze(1), f.unsqueeze(2), dim=3)
         mean_sim = torch.mean(cosine_sim, dim=2) # BS, NP
 
-
-
         mask_hard = gumbel_topk(mean_sim, k=NK, dim=1)
         mask_hard = mask_hard.unsqueeze(-1)
+        masked_f = f * mask_hard
         
         indices = mask_hard.detach().bool()  # ................| B, NP, 1
-        indices = indices.expand_as(f)  # .............| B, NP, DIM
-        masked_f = f[indices].reshape(B, NK, DIM)
+        indices = indices.expand_as(masked_f)  # .............| B, NP, DIM
+        masked_f = masked_f[indices].reshape(B, NK, DIM)
         
-        return masked_f
+        return masked_f, indices
     
     def forward(self, x):
         B, C, H, W = x.shape
@@ -156,115 +154,50 @@ class mod_DINOv2(nn.Module):
                 x = blk(x)
         x = x.detach()
 
-        x = self.model.blocks[-self.num_trainable_blocks](x)
-
         t = x[:, 0, None]
         f = x[:, 1:] # BS, NP, DIM
 
-        pruned_f = self.prune_patch(f)
-        x = torch.cat([t, pruned_f], dim=1)
+        pruned_f, indices = self.prune_patch(f)
+        pruned_x = torch.cat([t, pruned_f], dim=1)
 
         # Last blocks are trained
-        for blk in self.model.blocks[-(self.num_trainable_blocks-1):]:
-            x = blk(x)
-
+        for blk in self.model.blocks[1-self.num_trainable_blocks:]:
+            pruned_x = blk(pruned_x)
         if self.norm_layer:
-            x = self.model.norm(x)
+            pruned_x = self.model.norm(pruned_x)
         
-        t = x[:, 0]
-        f = x[:, 1:]
-
-        f = f.reshape((B, self.kept_patches, self.kept_patches, self.num_channels)).permute(0, 3, 1, 2) 
-
+        pruned_t = pruned_x[:, 0]
+        pruned_f = pruned_x[:, 1:]
+        pruned_f = pruned_f.reshape((B, self.kept_patches, self.kept_patches, self.num_channels)).permute(0, 3, 1, 2) 
+        
+        outputs = [pruned_f]
         if self.return_token:
-            return f, t
-        return f
-
-
-
-"""
-    def forward(self, x, calc_cosine:bool=True):
-
-        The forward method for the DINOv2 class
-
-        Parameters:
-            x (torch.Tensor): The input tensor [B, 3, H, W]. H and W should be divisible by 14.
-
-        Returns:
-            f (torch.Tensor): The feature map [B, C, H // 14, W // 14].
-            t (torch.Tensor): The token [B, C]. This is only returned if return_token is True.
-
-
-        B, C, H, W = x.shape
-
-        x = self.model.prepare_tokens_with_masks(x)
-        # First blocks are frozen
-        # forward_pre
-        with torch.no_grad():
-            for blk in self.model.blocks[:-self.num_trainable_blocks]:
-                x = blk(x)
-        x = x.detach()
-
-        x = self.model.blocks[-self.num_trainable_blocks](x)
-
-        t = x[:, 0, None]
-        f = x[:, 1:]
-
-        if calc_cosine:
-            batch_size = f.size(0)
-            half_size = batch_size // 2
-            f1, f2 = torch.split(f, (half_size, half_size), dim=0)
-            simm = self.calc_cosine(f1, f2)
-        else:
-            simm = None
-
-        pred_simm = self.predict_cosine(f)
-
-        if simm is not None: # in training phase
-            # weighted_f = f * simm
-            weighted_f = self.prune_patch(f, simm)
-            x = torch.cat([t, weighted_f], dim=1)
-
-        else: # in val/test phase
-            weighted_f = self.prune_patch(f, pred_simm)
-            # weighted_f = f * pred_simm
-            x = torch.cat([t, weighted_f], dim=1)
+            outputs.append(pruned_t)
         
-        # Last blocks are trained
-        for blk in self.model.blocks[-(self.num_trainable_blocks-1):]:
-            x = blk(x)
+        if self.training:
+            with torch.no_grad():
+                gt_x = x
+                for blk in self.model.blocks[1-self.num_trainable_blocks:]:
+                    gt_x = blk(gt_x)
+                if self.norm_layer:
+                    gt_x = self.model.norm(gt_x)
+            
+            gt_t = gt_x[:, 0]
+            gt_f = gt_x[:, 1:] # BS, NP, DIM
+            gt_f = gt_f[indices].reshape_as(pruned_f)
+            outputs.append(gt_f)
+            if self.return_token:
+                outputs.append(gt_t)
 
-        if self.norm_layer:
-            x = self.model.norm(x)
-        
-        t = x[:, 0]
-        f = x[:, 1:]
-        
-        # Reshape to (B, C, H, W)
-        # if simm is not None: # in  training phase
-        #     f = f.reshape((B, H // 14, W // 14, self.num_channels)).permute(0, 3, 1, 2)
-        # else: # in val/test phase
-        #     f = f.reshape((B, self.kept_patches, self.kept_patches, self.num_channels)).permute(0, 3, 1, 2)   
-        
-        # for full patch
-        # f = f.reshape((B, H // 14, W // 14, self.num_channels)).permute(0, 3, 1, 2)
+        return tuple(outputs)  # pruned_f, pruned_t, gt_f, gt_t
 
-        # for pruned patch
-        f = f.reshape((B, self.kept_patches, self.kept_patches, self.num_channels)).permute(0, 3, 1, 2)   
-        
-
-        if self.return_token:
-            return f, t, pred_simm, simm
-        return f, pred_simm, simm
-
-"""
 
 if __name__ == '__main__':
     import timm
     DEVICE = 6
     
     sample = torch.randn(2, 3, 224, 224).cuda(DEVICE)
-    net1 = DINOv2(return_token=True).cuda(DEVICE)
+    net1 = mod_DINOv2(return_token=True).cuda(DEVICE)
     
     f, t = net1(sample)
     
