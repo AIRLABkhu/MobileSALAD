@@ -20,7 +20,7 @@ if __name__ == '__main__':
     # torch.set_float32_matmul_precision('high')
     
     datamodule = GSVCitiesDataModule(
-        batch_size=8,
+        batch_size=16,
         img_per_place=4,
         min_img_per_place=4,
         shuffle_all=False, # shuffle all images or keep shuffling in-city only
@@ -46,10 +46,10 @@ if __name__ == '__main__':
         backbone_arch=backbone_arch,
         backbone_config={
             'model_name': 'dinov2_vitb14',
-            'num_trainable_blocks': 4,
+            'num_trainable_blocks': [2, 3, 4],
             'return_token': True,
             'norm_layer': True,
-            'masking_rate': 0.5,
+            'masking_rate': 0.2,
         },
         
         agg_arch='SALAD',
@@ -59,7 +59,7 @@ if __name__ == '__main__':
             'cluster_dim': 128,
             'token_dim': 256,
         },
-        lr = 6e-5,
+        lr = 6e-6,
         optimizer='adamW',
         weight_decay=9.5e-9, # 0.001 for sgd and 0 for adam,
         momentum=0.9,
@@ -78,11 +78,34 @@ if __name__ == '__main__':
         miner_margin=0.1,
         faiss_gpu=False
     )
+
     state_dict = torch.load('weights/dino_salad.ckpt', map_location='cpu')
-    state_dict['backbone.predictor.in_conv.0.weight'] = model.backbone.predictor.in_conv[0].weight.data.cpu()
-    state_dict['backbone.predictor.in_conv.0.bias'] = model.backbone.predictor.in_conv[0].bias.data.cpu()
-    state_dict['backbone.selector.in_conv.0.weight'] = model.backbone.selector.in_conv[0].weight.data.cpu()
-    state_dict['backbone.selector.in_conv.0.bias'] = model.backbone.selector.in_conv[0].bias.data.cpu()
+    # state_dict['backbone.predictor.in_conv.0.weight'] = model.backbone.predictor.in_conv[0].weight.data.cpu()
+    # state_dict['backbone.predictor.in_conv.0.bias'] = model.backbone.predictor.in_conv[0].bias.data.cpu()
+    # state_dict['backbone.selector.in_conv.0.weight'] = model.backbone.selector.in_conv[0].weight.data.cpu()
+
+    for i, selector in enumerate(model.backbone.selectors):
+        # state_dict[f'backbone.selectors.{i}.in_conv.0.weight'] = selector.in_conv[0].weight.data.cpu()
+        # state_dict[f'backbone.selectors.{i}.in_conv.0.bias'] = selector.in_conv[0].bias.data.cpu()
+
+        # state_dict[f'backbone.selectors.{i}.fc1.weight'] = selector.fc1.weight.data.cpu()
+        # state_dict[f'backbone.selectors.{i}.fc1.bias'] = selector.fc1.bias.data.cpu()
+        # state_dict[f'backbone.selectors.{i}.fc2.weight'] = selector.fc2.weight.data.cpu()
+        # state_dict[f'backbone.selectors.{i}.fc2.bias'] = selector.fc2.bias.data.cpu()
+
+        # dynamic vit selector
+        for k, in_selector in enumerate(selector.in_conv):
+            if 'weight' not in dir(in_selector):
+                continue
+            state_dict[f'backbone.selectors.{i}.in_conv.{k}.weight'] = in_selector.weight.data.cpu()
+            state_dict[f'backbone.selectors.{i}.in_conv.{k}.bias'] = in_selector.bias.data.cpu()
+        for k, out_selector in enumerate(selector.out_conv):
+            if 'weight' not in dir(out_selector):
+                continue
+            state_dict[f'backbone.selectors.{i}.out_conv.{k}.weight'] = out_selector.weight.data.cpu()
+            state_dict[f'backbone.selectors.{i}.out_conv.{k}.bias'] = out_selector.bias.data.cpu()
+
+
     model.load_state_dict(state_dict)
 
     # model params saving using Pytorch Lightning
@@ -114,8 +137,8 @@ if __name__ == '__main__':
     # )
     trainer = pl.Trainer(
         accelerator='gpu', 
-        # strategy=DeepSpeedStrategy(),
-        devices=[2],
+        # strategy='ddp_find_unused_parameters_true',
+        devices=[4],
         default_root_dir=f'./logs/', # Tensorflow can be used to viz 
         num_nodes=1,
         num_sanity_val_steps=0, # runs a validation step before stating training

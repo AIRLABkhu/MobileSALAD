@@ -91,18 +91,18 @@ class VPRModel(pl.LightningModule):
             out_gt = self.aggregator((gt_f, gt_t))
             return out_pr, out_gt
         else:
-            pr_f, pr_t = self.backbone(x)
+            pr_f, pr_t, _, _ = self.backbone(x)
             return self.aggregator((pr_f, pr_t))
 
         
     @utils.yield_as(list)
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
         # yield self.backbone.model.pos_embed
-        yield from self.backbone.model.blocks[-self.backbone.num_trainable_blocks:].parameters(recurse=recurse)
+        yield from self.backbone.model.blocks[self.backbone.num_trainable_blocks[0]:].parameters(recurse=recurse)
         yield from self.backbone.model.norm.parameters(recurse=recurse)
         # yield from self.backbone.model.fc_norm.parameters(recurse=recurse)
         # yield from self.backbone.model.head_drop.parameters(recurse=recurse)
-        # yield from self.backbone.predictor.parameters(recurse=recurse) # predictor parameter 추가
+        yield from self.backbone.selectors.parameters(recurse=recurse) # predictor parameter 추가
         yield from self.aggregator.parameters(recurse=recurse)
     
     # configure the optimizer 
@@ -268,8 +268,7 @@ class VPRModel(pl.LightningModule):
 
             r_list = feats[ : num_references]
             q_list = feats[num_references : ]
-            print(r_list.dtype)
-            print(r_list[0].dtype)
+
             pitts_dict = utils.get_validation_recalls(
                 r_list=r_list, 
                 q_list=q_list,
