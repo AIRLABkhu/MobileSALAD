@@ -14,7 +14,7 @@ class Mlp(nn.Module):
 
     def __init__(self, in_features, out_features=None, act_layer=nn.GELU, drop=0., group=1):
         super().__init__()
-        out_features = out_features or in_features
+        out_features = out_features 
         hidden_features = in_features 
 
         self.fc1 = nn.Linear(in_features, hidden_features)
@@ -34,94 +34,7 @@ class Mlp(nn.Module):
         x = x.squeeze()
         return x
 
-class Projector(nn.Module):
-    def __init__(self, in_features, out_features):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.in_conv = nn.Sequential(
-            # nn.LayerNorm(self.embed_dim * self.num_patch * 2),
-            nn.Linear(self.in_features , self.out_features),
-            # nn.Tanh()
-        )
-
-    def forward(self, x):
-        # x1, x2 ---> B, NP, DIM
-        B, NP, DIM = x.shape
-        # x = x.reshape(B, NP * DIM)
-        x = self.in_conv(x) # x ---> B* NP
-        # softmax를 한 번 거쳐서 out을 해야할지...?
-        x = x.squeeze()
-        return x
     
-    
-def get_sim(x, y, eps=1e-6, mask_eye=-100, l2_norm=True):
-
-    if y is None:
-        y = x
-    if l2_norm:
-        x = x / (x.norm(dim=-1, keepdim=True) + eps)
-        y = y / (y.norm(dim=-1, keepdim=True) + eps)
-
-    sim = torch.bmm(x, y.permute(0, 2, 1))
-    if mask_eye is not None:
-        sim.masked_fill_(
-            torch.eye(x.size(1), device=x.device).unsqueeze(0).bool(), mask_eye)
-    return sim
-
-    
-class TPSModule(nn.Module):
-
-    # from pruned tokens to keep tokens
-    def __init__(self, l2_norm=True, temperature=1) -> None:
-        super().__init__()
-        self.l2_norm = l2_norm
-        self.temperature = temperature
-
-    def forward(self, x, y, current_keep_decision, current_pruned_decision, relative_dist=None):
-        B, N, C = x.size(0), x.size(1), x.size(2)
-        if self.training:
-
-            cos_sim = get_sim(
-                x, None, mask_eye=-100, l2_norm=self.l2_norm)
-
-            cos_sim = cos_sim/self.temperature
-            cos_sim = cos_sim.masked_fill(
-                ~current_keep_decision.bool().reshape(B, 1, N), -100)
-
-            sim_th = cos_sim.amax(
-                dim=2, keepdims=True)
-
-            # N, pruned token dim, keep token dim
-            mask = (cos_sim == sim_th).float() * current_pruned_decision
-            cos_sim = (mask * cos_sim)
-            # N,keep token dim, pruned_token dim
-            mask = mask.permute(0, 2, 1)
-            cos_sim = cos_sim.permute(0, 2, 1)
-            numerator = torch.exp(cos_sim) * mask
-            denominator = math.e + numerator.sum(dim=-1, keepdims=True)
-            x = x * (math.e / denominator) + \
-                torch.bmm(numerator / denominator, x)
-
-        else:
-
-            # given k =  prune num
-            cos_sim = get_sim(
-                y, x, mask_eye=None, l2_norm=self.l2_norm)
-            cos_sim = cos_sim/self.temperature
-            sim_th = cos_sim.amax(dim=2, keepdims=True)
-            mask = (cos_sim == sim_th).float()
-            # N, pruned token dim, keep token dim
-            cos_sim = mask * cos_sim
-            # N,keep token dim, pruned_token dim
-            mask = mask.permute(0, 2, 1)
-            cos_sim = cos_sim.permute(0, 2, 1)
-            numerator = torch.exp(cos_sim) * mask
-            denominator = math.e + numerator.sum(dim=-1, keepdims=True)
-            x = x * (math.e / denominator) + \
-                torch.bmm(numerator / denominator, y)
-
-        return x
     
 class PredictorLG(nn.Module):
     """ Image to Patch Embedding
@@ -153,6 +66,7 @@ class PredictorLG(nn.Module):
         return self.out_conv(x)
 
 
+
 class mod_DINOv2(nn.Module):
     """
     DINOv2 model
@@ -171,7 +85,8 @@ class mod_DINOv2(nn.Module):
             num_trainable_blocks: list=[3, 6, 9],
             norm_layer=False,
             return_token=False,
-            masking_rate: float=0.2
+            masking_rate: float=0.2,
+            masking_mode: str=None,
         ):
         super().__init__()
 
@@ -181,21 +96,21 @@ class mod_DINOv2(nn.Module):
         self.num_trainable_blocks = num_trainable_blocks
         self.norm_layer = norm_layer
         self.return_token = return_token
+        self.masking_mode = masking_mode
 
         self.masking_rate = masking_rate
         self.img_size = img_size
         self.patch_size = 14
         self.num_patches = (img_size // 14)**2
 
-        self.kept_patches = int((self.num_patches - int(self.num_patches * self.masking_rate)) ** 0.5)
+        self.kept_patch_list = [int(self.num_patches * (1-self.masking_rate)**(i+1)) for i in range(len(self.num_trainable_blocks))]
+
+        self.kept_patches = int((self.kept_patch_list[-1]) ** 0.5)
+        self.kept_patch_list[-1] = self.kept_patches**2
+
         self.num_masks = int(self.num_patches - (self.kept_patches ** 2))
         # self.masking_rate = self.num_masks / self.num_patches
         self.kept_patches_row = int((self.num_patches - self.num_masks) ** 0.5)
-
-        self.re_num_patches = None
-        self.re_kept_patches = None
-        self.re_num_masks = None
-        self.re_kept_patches_row = None
 
         # self.selectors = nn.ModuleList([Mlp(in_features=self.num_channels, out_features=1) for _ in self.num_trainable_blocks])
 
@@ -221,15 +136,6 @@ class mod_DINOv2(nn.Module):
         
         return simm.unsqueeze(-1) #...| B, NP, 1
     
-    def predict_cosine(
-        self, 
-        f: torch.Tensor,
-    ):
-        # Predictor
-        pred_simm = self.predictor.forward(f)  #...............................| B, NP
-        pred_simm = pred_simm.unsqueeze(-1)  #.................................| B, NP, 1
-        
-        return pred_simm
     
     def random_mask(self, B, NP, NK):
         all_tensors_ = []
@@ -260,23 +166,20 @@ class mod_DINOv2(nn.Module):
     def prune_patch(
         self, 
         x: torch.Tensor, #.....................................................| B, NP, DIM
-        mode: str='random',
+        i
     ):
         t = x[:, 0, None]
         f = x[:, 1:]
 
         B, NP, DIM = f.shape
 
-        if self.re_kept_patches is not None:
-            NK = self.re_kept_patches ** 2
-        else:
-            NK = self.kept_patches ** 2
+        idx = self.num_trainable_blocks.index(i)
 
         # for random mask
-        if mode == 'random':
-            mask_hard = self.random_mask(B, NP, NK)
+        if self.masking_mode == 'random':
+            mask_hard = self.random_mask(B, NP, self.kept_patch_list[idx])
         # for checker mask
-        elif mode == 'checker':
+        elif self.masking_mode == 'checker':
             mask_hard = self.checker_mask(B, NP)
 
         mask_hard = mask_hard.unsqueeze(-1)
@@ -291,17 +194,6 @@ class mod_DINOv2(nn.Module):
         x = torch.cat([t, masked_f], dim=1)
         # print(masked_f.shape)
         
-        # patch num update
-        if self.re_kept_patches is None:
-            self.re_num_patches = self.kept_patches**2
-        else:
-            self.re_num_patches = self.re_kept_patches**2
-
-        self.re_kept_patches = int((self.re_num_patches - int(self.re_num_patches * self.masking_rate)) ** 0.5)
-        self.re_num_masks = int(self.re_num_patches - (self.re_kept_patches ** 2))
-        self.re_kept_patches_row = int((self.re_num_patches - self.re_num_masks) ** 0.5)
-
-
         return x, indices
     
     def prune(self, x, i):
@@ -310,17 +202,18 @@ class mod_DINOv2(nn.Module):
 
         B, NP, DIM = f.shape
         policy = torch.ones(B, NP, 1, dtype=f.dtype, device=f.device)
+        idx = self.num_trainable_blocks.index(i)
 
-        # selected_prob = self.selectors[self.num_trainable_blocks.index(i)](f)
+        # selected_prob = self.selectors[idx](f)
         # for dynamic predictor
         selected_prob = self.selectors[self.num_trainable_blocks.index(i)](f, policy)
+        if len(selected_prob.shape) == 1:
+            selected_prob = selected_prob.unsqueeze(0)
 
-        if self.re_kept_patches is None:
-            mask_hard = gumbel_topk(selected_prob, k=self.kept_patches**2, dim=1)
-        else:
-            mask_hard = gumbel_topk(selected_prob, k=self.re_kept_patches**2, dim=1)
+        mask_hard = gumbel_topk(selected_prob, k=self.kept_patch_list[idx], dim=1)
 
         # mask_hard = mask_hard.unsqueeze(-1)
+        mask_hard = mask_hard.expand_as(f)
 
         masked_f = f * mask_hard
         indices = mask_hard.detach().bool()
@@ -328,18 +221,66 @@ class mod_DINOv2(nn.Module):
         masked_f = masked_f[indices].reshape(B, -1, DIM)
 
         x = torch.cat([t, masked_f], dim=1)
-
-        # patch num update
-        if self.re_kept_patches is None:
-            self.re_num_patches = self.kept_patches**2
-        else:
-            self.re_num_patches = self.re_kept_patches**2
-        
-        self.re_kept_patches = int((self.re_num_patches - int(self.re_num_patches * self.masking_rate)) ** 0.5)
-        self.re_num_masks = int(self.re_num_patches - (self.re_kept_patches ** 2))
-        self.re_kept_patches_row = int((self.re_num_patches - self.re_num_masks) ** 0.5)
+        print(f'{masked_f.shape=}')
 
         return x, indices
+
+    # def merge_and_prune(self, x, i):
+    #     t = x[:, 0, None]
+    #     f = x[:, 1:]
+
+    #     B, NP, DIM = f.shape
+
+    #     idx = self.num_trainable_blocks.index(i)
+
+    #     selected_prob = self.selectors[idx](f)
+
+    #     # policy = torch.ones(B, NP, 1, dtype=f.dtype, device=f.device)
+    #     # selected_prob = self.selector(f, policy)
+
+    #     mask_hard = gumbel_topk(selected_prob, k=self.kept_patch_list[idx], dim=1)
+
+    #     metric = f / f.norm(dim=-1, keepdim=True)
+
+    #     selected_f = metric * mask_hard
+    #     pruned_f = metric * (1-mask_hard)
+
+    #     indices = mask_hard.detach().bool()
+    #     indices = indices.expand_as(selected_f)
+
+    #     selected_f = selected_f[indices].reshape(B, -1, DIM)
+    #     pruned_f = pruned_f[~indices].reshape(B, -1, DIM)
+
+    #     scores = selected_f @ pruned_f.transpose(-1, -2)
+    #     node_max, node_idx = scores.max(dim=-1)
+    #     edge_idx = node_max.argsort(dim=-1, descending=True)[..., None]
+
+    #     r = int(self.kept_patch_list[idx] / 2)
+
+    #     unm_idx = edge_idx[..., r:, :]  # Unmerged Tokens
+    #     src_idx = edge_idx[..., :r, :]  # Merged Tokens
+    #     dst_idx = node_idx[..., None].gather(dim=-2, index=src_idx)
+
+    #     unm = selected_f.gather(dim=-2, index=unm_idx.expand(1, 3, 12))
+    #     src = selected_f.gather(dim=-2, index=src_idx.expand(1, 3, 12))
+
+    #     # selected_pruned = torch.index_select(pruned_f, dim=1, index=dst_idx.squeeze())
+
+    #     un_dst_idx = torch.unique(dst_idx)
+    #     un_mask = torch.ones_like(pruned_f, dtype=torch.bool)
+    #     un_mask[un_dst_idx] = 0
+    #     # unselected_pruned = torch.masked_select(pruned_f, un_mask)
+
+    #     merged_global_token = torch.mean(torch.cat([t, unselected_pruned], dim = 1), dim=1)
+
+    #     merged_feature  = src + selected_pruned
+    #     merged_feature /= 2
+
+    #     selected_f[src_idx] = merged_feature
+
+    #     x = torch.cat([merged_global_token, selected_f], dim=1)
+
+    #     return x, indices
 
 
     def forward(self, x):
@@ -357,14 +298,18 @@ class mod_DINOv2(nn.Module):
             elif i in self.num_trainable_blocks:
                 if i == self.num_trainable_blocks[0]:
                     x = x.detach()
-                    pr_x, ind = self.prune(x, i)
-                    # pr_x, ind = self.prune_patch(x, 'random')
+                    if self.masking_mode is None:
+                        pr_x, ind = self.prune(x, i)
+                    else:
+                        pr_x, ind = self.prune_patch(x, i)
                     total_ = ind.clone()
                     mask_ = total_.clone()
 
                 else:
-                    pr_x, ind = self.prune(pr_x, i)
-                    # pr_x, ind = self.prune_patch(pr_x, 'random')
+                    if self.masking_mode is None:
+                        pr_x, ind = self.prune(pr_x, i)
+                    else:
+                        pr_x, ind = self.prune_patch(pr_x, i)
                     total_[mask_] = ind.reshape(-1)
                     mask_ = total_.clone()
 
@@ -389,15 +334,10 @@ class mod_DINOv2(nn.Module):
         total_ = total_.detach().bool()
         f = f[total_].reshape(B, -1, self.num_channels)
 
-        # f = f.reshape((B, int(self.num_patches ** 0.5), int((self.num_patches ** 0.5 ) // 2), self.num_channels)).permute(0, 3, 1, 2) 
-        gt_f = f.reshape((B, int(self.re_num_patches **0.5), int(self.re_num_patches **0.5), self.num_channels)).permute(0, 3, 1, 2)
-        pr_f = pr_f.reshape((B, int(self.re_num_patches **0.5), int(self.re_num_patches **0.5), self.num_channels)).permute(0, 3, 1, 2)
-
-
-        self.re_num_patches = None
-        self.re_kept_patches = None
-        self.re_num_masks = None
-        self.re_kept_patches_row = None
+        pr_f = pr_f.reshape((B, self.kept_patches, self.kept_patches, self.num_channels)).permute(0, 3, 1, 2)
+        gt_f = f.reshape((B, self.kept_patches, self.kept_patches, self.num_channels)).permute(0, 3, 1, 2) 
+        # gt_f = f.reshape((B, int(self.re_num_patches **0.5), int(self.re_num_patches **0.5), self.num_channels)).permute(0, 3, 1, 2)
+        # pr_f = pr_f.reshape((B, int(self.re_num_patches **0.5), int(self.re_num_patches **0.5), self.num_channels)).permute(0, 3, 1, 2)
 
         if self.return_token:
             return pr_f, pr_t, gt_f, t

@@ -94,7 +94,6 @@ class VPRModel(pl.LightningModule):
             pr_f, pr_t, _, _ = self.backbone(x)
             return self.aggregator((pr_f, pr_t))
 
-        
     @utils.yield_as(list)
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
         # yield self.backbone.model.pos_embed
