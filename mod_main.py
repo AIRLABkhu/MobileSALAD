@@ -8,6 +8,8 @@ from pytorch_lightning import strategies
 from mod_vpr_model import VPRModel
 from dataloaders.GSVCitiesDataloader import GSVCitiesDataModule
 
+from argparse import ArgumentParser
+
 DINOV2_ARCHS = {
     'dinov2_vits14': 384,
     'dinov2_vitb14': 768,
@@ -18,6 +20,13 @@ DINOV2_ARCHS = {
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
     # torch.set_float32_matmul_precision('high')
+
+    parser = ArgumentParser()
+    parser.add_argument('--device', type=int, default=0)
+    parser.add_argument('--masking-rate', type=float, default=0.2)
+    parser.add_argument('--masking-mode', type=str, default=None)
+    parser.add_argument('--tag', type=str, required=True)
+    args = parser.parse_args()
     
     datamodule = GSVCitiesDataModule(
         batch_size=16,
@@ -46,10 +55,11 @@ if __name__ == '__main__':
         backbone_arch=backbone_arch,
         backbone_config={
             'model_name': 'dinov2_vitb14',
-            'num_trainable_blocks': [2, 3, 4],
+            'num_trainable_blocks': [8,9,10],
             'return_token': True,
             'norm_layer': True,
-            'masking_rate': 0.2,
+            'masking_rate': args.masking_rate,
+            'masking_mode': args.masking_mode,
         },
         
         agg_arch='SALAD',
@@ -138,8 +148,8 @@ if __name__ == '__main__':
     trainer = pl.Trainer(
         accelerator='gpu', 
         # strategy='ddp_find_unused_parameters_true',
-        devices=[4],
-        default_root_dir=f'./logs/', # Tensorflow can be used to viz 
+        devices=[args.device],
+        default_root_dir=f'./logs/{args.tag}', # Tensorflow can be used to viz 
         num_nodes=1,
         num_sanity_val_steps=0, # runs a validation step before stating training
         # precision='16-mixed', # we use half precision to reduce memory usage
