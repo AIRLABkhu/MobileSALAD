@@ -118,25 +118,6 @@ class mod_DINOv2(nn.Module):
         self.selectors = nn.ModuleList([PredictorLG(embed_dim=self.num_channels) for _ in self.num_trainable_blocks])
 
 
-
-    def calc_cosine(
-        self, 
-        f1: torch.Tensor, 
-        f2: torch.Tensor, 
-    ) -> (torch.Tensor, torch.Tensor, torch.Tensor):
-        '''
-        x1, x2: B, NP+1, DIM
-        only training.
-        '''
-        if f1.shape != f2.shape:
-            raise RuntimeError('The shape of the two tensors must equal.')
-        
-        simm = torch.nn.functional.cosine_similarity(f1, f2, dim=2)  #...| B/2, NP
-        simm = torch.cat([simm, simm], dim=0) #...| B, NP
-        
-        return simm.unsqueeze(-1) #...| B, NP, 1
-    
-    
     def random_mask(self, B, NP, NK):
         all_tensors_ = []
         for _ in range(B):
@@ -195,7 +176,41 @@ class mod_DINOv2(nn.Module):
         # print(masked_f.shape)
         
         return x, indices
-    
+
+    def get_sim(x, y, eps=1e-6, mask_eye=-100, l2_norm=True):
+
+        if y is None:
+            y = x
+        if l2_norm:
+            x = x / (x.norm(dim=-1, keepdim=True) + eps)
+            y = y / (y.norm(dim=-1, keepdim=True) + eps)
+
+        sim = torch.bmm(x, y.permute(0, 2, 1))
+        if mask_eye is not None:
+            sim.masked_fill_(
+                torch.eye(x.size(1), device=x.device).unsqueeze(0).bool(), mask_eye)
+        return sim
+
+    def TPS_merge(self, x, y):
+        # x: keep token
+        # y: pruned token
+
+        cos_sim = get_sim(y, x, mask_eye=None, l2_norm=True)
+        sim_th = cos_sim.amax(dim=2, keepdims=True)
+        mask = (cos_sim == sim_th).float()
+
+        # N, pruned token dim, keep token dim
+        cos_sim = mask * cos_sim
+
+        # N,keep token dim, pruned_token dim
+        mask = mask.permute(0, 2, 1)
+        cos_sim = cos_sim.permute(0, 2, 1)
+        numerator = torch.exp(cos_sim) * mask
+        denominator = math.e + numerator.sum(dim=-1, keepdims=True)
+        x = x * (math.e / denominator) + \
+            torch.bmm(numerator / denominator, y)
+        return x
+        
     def prune(self, x, i):
         t = x[:, 0, None]
         f = x[:, 1:]
@@ -221,7 +236,6 @@ class mod_DINOv2(nn.Module):
         masked_f = masked_f[indices].reshape(B, -1, DIM)
 
         x = torch.cat([t, masked_f], dim=1)
-        print(f'{masked_f.shape=}')
 
         return x, indices
 
