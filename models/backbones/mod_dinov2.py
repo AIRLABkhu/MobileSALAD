@@ -212,7 +212,10 @@ class mod_DINOv2(nn.Module):
 
         # for random mask
         if self.masking_mode == 'random':
-            mask_hard = self.random_mask(B, NP, self.kept_patch_list[idx])
+            if self.training:
+                mask_hard = self.random_mask(B, NP, self.kept_patch_list[idx])
+            else:
+                mask_hard = self.random_mask(B, NP, self.val_kept_patch_list[idx])
         # for checker mask
         elif self.masking_mode == 'checker':
             mask_hard = self.checker_mask(B, NP)
