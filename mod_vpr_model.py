@@ -42,7 +42,8 @@ class VPRModel(pl.LightningModule):
         loss_name='MultiSimilarityLoss', 
         miner_name='MultiSimilarityMiner', 
         miner_margin=0.1,
-        faiss_gpu=False
+        faiss_gpu=False,
+        faiss_device=0
     ):
         super().__init__()
 
@@ -74,6 +75,7 @@ class VPRModel(pl.LightningModule):
         self.batch_acc = [] # we will keep track of the % of trivial pairs/triplets at the loss level 
         self.criterion = torch.nn.L1Loss()
         self.faiss_gpu = faiss_gpu
+        self.faiss_device = faiss_device
         
         # ----------------------------------
         # get the backbone and the aggregator
@@ -276,7 +278,7 @@ class VPRModel(pl.LightningModule):
                 print_results=True,
                 dataset_name=val_set_name,
                 faiss_gpu=self.faiss_gpu,
-                device = self.backbone.device
+                faiss_device = self.faiss_device
             )
             del r_list, q_list, feats, num_references, positives
 
