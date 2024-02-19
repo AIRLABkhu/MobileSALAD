@@ -275,7 +275,8 @@ class VPRModel(pl.LightningModule):
                 gt=positives,
                 print_results=True,
                 dataset_name=val_set_name,
-                faiss_gpu=self.faiss_gpu
+                faiss_gpu=self.faiss_gpu,
+                device = self.backbone.device
             )
             del r_list, q_list, feats, num_references, positives
 
