@@ -96,7 +96,8 @@ if __name__ == '__main__':
         loss_name='MultiSimilarityLoss',
         miner_name='MultiSimilarityMiner', # example: TripletMarginMiner, MultiSimilarityMiner, PairMarginMiner
         miner_margin=0.1,
-        faiss_gpu=True
+        faiss_gpu=True,
+        faiss_device=args.device
     )
 
     state_dict = torch.load('weights/dino_salad.ckpt', map_location='cpu')

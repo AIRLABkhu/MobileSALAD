@@ -129,10 +129,20 @@ python mod_main.py --masking-mode random --masking-rate 0.206 --epochs 10 --chec
 python mod_main.py --masking-mode random --masking-rate 0.206 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.206_lr_1e-5_02 --device 4
 python mod_main.py --masking-mode random --masking-rate 0.206 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.206_lr_1e-5_03 --device 4
 
-python mod_main.py --masking-mode random --masking-rate 0.206 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.206_lr_1e-5_00 --device 4
-python mod_main.py --masking-mode random --masking-rate 0.206 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.206_lr_1e-5_01 --device 4
-python mod_main.py --masking-mode random --masking-rate 0.206 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.206_lr_1e-5_02 --device 4
-python mod_main.py --masking-mode random --masking-rate 0.206 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.206_lr_1e-5_03 --device 4
+python mod_main.py --masking-mode random --masking-rate 0.331 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.331_lr_1e-5_00 --device 5
+python mod_main.py --masking-mode random --masking-rate 0.331 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.331_lr_1e-5_01 --device 5
+python mod_main.py --masking-mode random --masking-rate 0.331 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.331_lr_1e-5_02 --device 5
+python mod_main.py --masking-mode random --masking-rate 0.331 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.331_lr_1e-5_03 --device 5
+
+python mod_main.py --masking-mode random --masking-rate 0.112 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.112_lr_1e-5_00 --device 6
+python mod_main.py --masking-mode random --masking-rate 0.112 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.112_lr_1e-5_01 --device 6
+python mod_main.py --masking-mode random --masking-rate 0.112 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.112_lr_1e-5_02 --device 6
+python mod_main.py --masking-mode random --masking-rate 0.112 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.112_lr_1e-5_03 --device 6
+
+python mod_main.py --masking-mode random --masking-rate 0.035 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.035_lr_1e-5_00 --device 7
+python mod_main.py --masking-mode random --masking-rate 0.035 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.035_lr_1e-5_01 --device 7
+python mod_main.py --masking-mode random --masking-rate 0.035 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.035_lr_1e-5_02 --device 7
+python mod_main.py --masking-mode random --masking-rate 0.035 --epochs 10 --check-val 1 --lr 1e-5 --tag mr_random_0.035_lr_1e-5_03 --device 7
 
 
 
