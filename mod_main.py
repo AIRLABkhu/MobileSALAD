@@ -33,8 +33,8 @@ if __name__ == '__main__':
     parser.add_argument('--check-val', type=int, default=1)
     parser.add_argument('--lr', type=float, default=6e-6)
 
+    # parser.add_argument('--trainable_blocks', default=)
 
-   
     args = parser.parse_args()
     
     datamodule = GSVCitiesDataModule(

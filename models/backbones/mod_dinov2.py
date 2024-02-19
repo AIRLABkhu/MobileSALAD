@@ -169,9 +169,6 @@ class mod_DINOv2(nn.Module):
         # self.selectors = nn.ModuleList([PredictorLG(embed_dim=self.num_channels) for _ in self.num_trainable_blocks])
 
 
-
-
-
     def random_mask(self, B, NP, NK):
         all_tensors_ = []
         for _ in range(B):
@@ -233,42 +230,6 @@ class mod_DINOv2(nn.Module):
         # print(masked_f.shape)
         
         return x, indices
-
-
-    def TPS_merge(self, x, y):
-        # x: keep token
-        # y: pruned token
-
-        def get_sim(x, y, eps=1e-6, mask_eye=-100, l2_norm=True):
-
-            if y is None:
-                y = x
-            if l2_norm:
-                x = x / (x.norm(dim=-1, keepdim=True) + eps)
-                y = y / (y.norm(dim=-1, keepdim=True) + eps)
-
-            sim = torch.bmm(x, y.permute(0, 2, 1))
-            if mask_eye is not None:
-                sim.masked_fill_(
-                    torch.eye(x.size(1), device=x.device).unsqueeze(0).bool(), mask_eye)
-            return sim
-
-        cos_sim = get_sim(y, x, mask_eye=None, l2_norm=False)
-        sim_th = cos_sim.amax(dim=2, keepdims=True)
-        mask = (cos_sim == sim_th).float()
-
-        # N, pruned token dim, keep token dim
-        cos_sim = mask * cos_sim
-
-        # N,keep token dim, pruned_token dim
-        mask = mask.permute(0, 2, 1)
-        cos_sim = cos_sim.permute(0, 2, 1)
-        numerator = torch.exp(cos_sim) * mask
-        denominator = math.e + numerator.sum(dim=-1, keepdims=True)
-        x = x * (math.e / denominator) + \
-            torch.bmm(numerator / denominator, y)
-
-        return x
         
     def prune(self, x, i):
         t = x[:, 0, None]
@@ -292,83 +253,12 @@ class mod_DINOv2(nn.Module):
         if len(mask_hard.size()) == 2:
             mask_hard = mask_hard.unsqueeze(-1)
         mask_hard = mask_hard.expand_as(f)
-
         masked_f = f * mask_hard
-        indices = mask_hard.detach().bool()
-        indices = indices.expand_as(masked_f)
-        masked_f = masked_f[indices].reshape(B, -1, DIM)
+        masked_f = masked_f[mask_hard.detach().bool()].reshape(B, -1, DIM)
 
-        # # pruned token
-        # pruned_hard = 1 - mask_hard
-        
-        # pruned_f = f * pruned_hard
-        # pruned_f = pruned_f[~indices].reshape(B, -1, DIM)
-
-        # # merge (TPS module)
-        # merged_f = self.TPS_merge(torch.Tensor(masked_f), pruned_f)
-        
-        # x = torch.cat([t, merged_f], dim=1)
         x = torch.cat([t, masked_f], dim=1)
 
-        return x, indices
-
-    # def merge_and_prune(self, x, i):
-    #     t = x[:, 0, None]
-    #     f = x[:, 1:]
-
-    #     B, NP, DIM = f.shape
-
-    #     idx = self.num_trainable_blocks.index(i)
-
-    #     selected_prob = self.selectors[idx](f)
-
-    #     # policy = torch.ones(B, NP, 1, dtype=f.dtype, device=f.device)
-    #     # selected_prob = self.selector(f, policy)
-
-    #     mask_hard = gumbel_topk(selected_prob, k=self.kept_patch_list[idx], dim=1)
-
-    #     metric = f / f.norm(dim=-1, keepdim=True)
-
-    #     selected_f = metric * mask_hard
-    #     pruned_f = metric * (1-mask_hard)
-
-    #     indices = mask_hard.detach().bool()
-    #     indices = indices.expand_as(selected_f)
-
-    #     selected_f = selected_f[indices].reshape(B, -1, DIM)
-    #     pruned_f = pruned_f[~indices].reshape(B, -1, DIM)
-
-    #     scores = selected_f @ pruned_f.transpose(-1, -2)
-    #     node_max, node_idx = scores.max(dim=-1)
-    #     edge_idx = node_max.argsort(dim=-1, descending=True)[..., None]
-
-    #     r = int(self.kept_patch_list[idx] / 2)
-
-    #     unm_idx = edge_idx[..., r:, :]  # Unmerged Tokens
-    #     src_idx = edge_idx[..., :r, :]  # Merged Tokens
-    #     dst_idx = node_idx[..., None].gather(dim=-2, index=src_idx)
-
-    #     unm = selected_f.gather(dim=-2, index=unm_idx.expand(1, 3, 12))
-    #     src = selected_f.gather(dim=-2, index=src_idx.expand(1, 3, 12))
-
-    #     # selected_pruned = torch.index_select(pruned_f, dim=1, index=dst_idx.squeeze())
-
-    #     un_dst_idx = torch.unique(dst_idx)
-    #     un_mask = torch.ones_like(pruned_f, dtype=torch.bool)
-    #     un_mask[un_dst_idx] = 0
-    #     # unselected_pruned = torch.masked_select(pruned_f, un_mask)
-
-    #     merged_global_token = torch.mean(torch.cat([t, unselected_pruned], dim = 1), dim=1)
-
-    #     merged_feature  = src + selected_pruned
-    #     merged_feature /= 2
-
-    #     selected_f[src_idx] = merged_feature
-
-    #     x = torch.cat([merged_global_token, selected_f], dim=1)
-
-    #     return x, indices
-
+        return x, mask_hard
 
     def forward(self, x):
         B, C, H, W = x.shape
@@ -384,7 +274,6 @@ class mod_DINOv2(nn.Module):
                     x = blk(x)
             elif i in self.num_trainable_blocks:
                 if i == self.num_trainable_blocks[0]:
-                    x = x.detach()
                     if self.masking_mode is None:
                         pr_x, ind = self.prune(x, i)
                     else:
@@ -397,7 +286,7 @@ class mod_DINOv2(nn.Module):
                         pr_x, ind = self.prune(pr_x, i)
                     else:
                         pr_x, ind = self.prune_patch(pr_x, i)
-                    total_[mask_] = ind.reshape(-1)
+                    total_[mask_.bool()] = ind.reshape(-1)
                     mask_ = total_.clone()
 
                 # after pruing, go to transformer block
@@ -418,8 +307,7 @@ class mod_DINOv2(nn.Module):
         pr_f = pr_x[:, 1:]
 
         f = f * total_
-        total_ = total_.detach().bool()
-        f = f[total_].reshape(B, -1, self.num_channels)
+        f = f[mask_.detach().bool()].reshape(B, -1, self.num_channels)
 
         if self.training:
             pr_f = pr_f.reshape((B, self.kept_patches, self.kept_patches, self.num_channels)).permute(0, 3, 1, 2)

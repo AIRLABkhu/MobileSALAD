@@ -5,14 +5,14 @@ from prettytable import PrettyTable
 import torch
 
 
-def get_validation_recalls(r_list, q_list, k_values, gt, print_results=True, faiss_gpu=False, dataset_name='dataset without name ?', testing=False):
+def get_validation_recalls(r_list, q_list, k_values, gt, print_results=True, faiss_gpu=False, device=0, dataset_name='dataset without name ?', testing=False):
         
         embed_size = r_list.shape[1]
         if faiss_gpu:
             res = faiss.StandardGpuResources()
             flat_config = faiss.GpuIndexFlatConfig()
             flat_config.useFloat16 = True
-            flat_config.device = 0
+            flat_config.device = device
             faiss_index = faiss.GpuIndexFlatL2(res, embed_size, flat_config)
         # build index
         else:
