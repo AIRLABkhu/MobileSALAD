@@ -42,7 +42,8 @@ class VPRModel(pl.LightningModule):
         loss_name='MultiSimilarityLoss', 
         miner_name='MultiSimilarityMiner', 
         miner_margin=0.1,
-        faiss_gpu=False
+        faiss_gpu=False,
+        faiss_device=0
     ):
         super().__init__()
 
@@ -74,6 +75,7 @@ class VPRModel(pl.LightningModule):
         self.batch_acc = [] # we will keep track of the % of trivial pairs/triplets at the loss level 
         self.criterion = torch.nn.L1Loss()
         self.faiss_gpu = faiss_gpu
+        self.faiss_device = faiss_device
         
         # ----------------------------------
         # get the backbone and the aggregator
@@ -91,18 +93,17 @@ class VPRModel(pl.LightningModule):
             out_gt = self.aggregator((gt_f, gt_t))
             return out_pr, out_gt
         else:
-            pr_f, pr_t = self.backbone(x)
+            pr_f, pr_t, _, _ = self.backbone(x)
             return self.aggregator((pr_f, pr_t))
 
-        
     @utils.yield_as(list)
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
         # yield self.backbone.model.pos_embed
-        yield from self.backbone.model.blocks[-self.backbone.num_trainable_blocks:].parameters(recurse=recurse)
+        yield from self.backbone.model.blocks[self.backbone.num_trainable_blocks[0]:].parameters(recurse=recurse)
         yield from self.backbone.model.norm.parameters(recurse=recurse)
         # yield from self.backbone.model.fc_norm.parameters(recurse=recurse)
         # yield from self.backbone.model.head_drop.parameters(recurse=recurse)
-        # yield from self.backbone.predictor.parameters(recurse=recurse) # predictor parameter 추가
+        yield from self.backbone.selectors.parameters(recurse=recurse) # predictor parameter 추가
         yield from self.aggregator.parameters(recurse=recurse)
     
     # configure the optimizer 
@@ -268,8 +269,7 @@ class VPRModel(pl.LightningModule):
 
             r_list = feats[ : num_references]
             q_list = feats[num_references : ]
-            print(r_list.dtype)
-            print(r_list[0].dtype)
+
             pitts_dict = utils.get_validation_recalls(
                 r_list=r_list, 
                 q_list=q_list,
@@ -277,7 +277,8 @@ class VPRModel(pl.LightningModule):
                 gt=positives,
                 print_results=True,
                 dataset_name=val_set_name,
-                faiss_gpu=self.faiss_gpu
+                faiss_gpu=self.faiss_gpu,
+                faiss_device = self.faiss_device
             )
             del r_list, q_list, feats, num_references, positives
 

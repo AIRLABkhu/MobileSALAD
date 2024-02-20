@@ -8,6 +8,8 @@ from pytorch_lightning import strategies
 from mod_vpr_model import VPRModel
 from dataloaders.GSVCitiesDataloader import GSVCitiesDataModule
 
+from argparse import ArgumentParser
+
 DINOV2_ARCHS = {
     'dinov2_vits14': 384,
     'dinov2_vitb14': 768,
@@ -18,15 +20,31 @@ DINOV2_ARCHS = {
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
     # torch.set_float32_matmul_precision('high')
+
+    parser = ArgumentParser()
+    parser.add_argument('--device', type=int, default=0)
+    parser.add_argument('--tag', type=str, required=True)
+
+    parser.add_argument('--masking-rate', type=float, default=0.2)
+    parser.add_argument('--val-masking-rate', type=float, default=None)
+
+    parser.add_argument('--masking-mode', type=str, default=None)
+    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--check-val', type=int, default=1)
+    parser.add_argument('--lr', type=float, default=6e-6)
+
+    # parser.add_argument('--trainable_blocks', default=)
+
+    args = parser.parse_args()
     
     datamodule = GSVCitiesDataModule(
-        batch_size=8,
+        batch_size=16,
         img_per_place=4,
         min_img_per_place=4,
         shuffle_all=False, # shuffle all images or keep shuffling in-city only
         random_sample_from_each_place=True,
         image_size=(224, 224),
-        num_workers=16,
+        num_workers=8,
         persistent_workers=True, # for CPU
         show_data_stats=True,
         val_set_names=[
@@ -46,10 +64,12 @@ if __name__ == '__main__':
         backbone_arch=backbone_arch,
         backbone_config={
             'model_name': 'dinov2_vitb14',
-            'num_trainable_blocks': 4,
+            'num_trainable_blocks': [8,9,10],
             'return_token': True,
             'norm_layer': True,
-            'masking_rate': 0.5,
+            'masking_rate': args.masking_rate,
+            'val_masking_rate': args.val_masking_rate,
+            'masking_mode': args.masking_mode,
         },
         
         agg_arch='SALAD',
@@ -59,7 +79,7 @@ if __name__ == '__main__':
             'cluster_dim': 128,
             'token_dim': 256,
         },
-        lr = 6e-5,
+        lr = args.lr,
         optimizer='adamW',
         weight_decay=9.5e-9, # 0.001 for sgd and 0 for adam,
         momentum=0.9,
@@ -76,13 +96,37 @@ if __name__ == '__main__':
         loss_name='MultiSimilarityLoss',
         miner_name='MultiSimilarityMiner', # example: TripletMarginMiner, MultiSimilarityMiner, PairMarginMiner
         miner_margin=0.1,
-        faiss_gpu=False
+        faiss_gpu=True,
+        faiss_device=args.device
     )
+
     state_dict = torch.load('weights/dino_salad.ckpt', map_location='cpu')
-    state_dict['backbone.predictor.in_conv.0.weight'] = model.backbone.predictor.in_conv[0].weight.data.cpu()
-    state_dict['backbone.predictor.in_conv.0.bias'] = model.backbone.predictor.in_conv[0].bias.data.cpu()
-    state_dict['backbone.selector.in_conv.0.weight'] = model.backbone.selector.in_conv[0].weight.data.cpu()
-    state_dict['backbone.selector.in_conv.0.bias'] = model.backbone.selector.in_conv[0].bias.data.cpu()
+    # state_dict['backbone.predictor.in_conv.0.weight'] = model.backbone.predictor.in_conv[0].weight.data.cpu()
+    # state_dict['backbone.predictor.in_conv.0.bias'] = model.backbone.predictor.in_conv[0].bias.data.cpu()
+    # state_dict['backbone.selector.in_conv.0.weight'] = model.backbone.selector.in_conv[0].weight.data.cpu()
+
+    for i, selector in enumerate(model.backbone.selectors):
+        # state_dict[f'backbone.selectors.{i}.in_conv.0.weight'] = selector.in_conv[0].weight.data.cpu()
+        # state_dict[f'backbone.selectors.{i}.in_conv.0.bias'] = selector.in_conv[0].bias.data.cpu()
+
+        state_dict[f'backbone.selectors.{i}.fc1.weight'] = selector.fc1.weight.data.cpu()
+        state_dict[f'backbone.selectors.{i}.fc1.bias'] = selector.fc1.bias.data.cpu()
+        state_dict[f'backbone.selectors.{i}.fc2.weight'] = selector.fc2.weight.data.cpu()
+        state_dict[f'backbone.selectors.{i}.fc2.bias'] = selector.fc2.bias.data.cpu()
+
+        # dynamic vit selector
+        # for k, in_selector in enumerate(selector.in_conv):
+        #     if 'weight' not in dir(in_selector):
+        #         continue
+        #     state_dict[f'backbone.selectors.{i}.in_conv.{k}.weight'] = in_selector.weight.data.cpu()
+        #     state_dict[f'backbone.selectors.{i}.in_conv.{k}.bias'] = in_selector.bias.data.cpu()
+        # for k, out_selector in enumerate(selector.out_conv):
+        #     if 'weight' not in dir(out_selector):
+        #         continue
+        #     state_dict[f'backbone.selectors.{i}.out_conv.{k}.weight'] = out_selector.weight.data.cpu()
+        #     state_dict[f'backbone.selectors.{i}.out_conv.{k}.bias'] = out_selector.bias.data.cpu()
+
+
     model.load_state_dict(state_dict)
 
     # model params saving using Pytorch Lightning
@@ -114,15 +158,15 @@ if __name__ == '__main__':
     # )
     trainer = pl.Trainer(
         accelerator='gpu', 
-        # strategy=DeepSpeedStrategy(),
-        devices=[2],
-        default_root_dir=f'./logs/', # Tensorflow can be used to viz 
+        # strategy='ddp_find_unused_parameters_true',
+        devices=[args.device],
+        default_root_dir=f'./logs/{args.tag}', # Tensorflow can be used to viz 
         num_nodes=1,
         num_sanity_val_steps=0, # runs a validation step before stating training
         # precision='16-mixed', # we use half precision to reduce memory usage
         # precision='32', # we use half precision to reduce memory usage
-        max_epochs=10,  # increased by 8 because the batch was halved. 
-        check_val_every_n_epoch=1, # run validation every epoch
+        max_epochs=args.epochs,  # increased by 8 because the batch was halved. 
+        check_val_every_n_epoch=args.check_val, # run validation every epoch
         callbacks=[checkpoint_cb],# we only run the checkpointing callback (you can add more)
         reload_dataloaders_every_n_epochs=1, # we reload the dataset to shuffle the order
         log_every_n_steps=20,
