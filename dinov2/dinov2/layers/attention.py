@@ -6,31 +6,16 @@
 # References:
 #   https://github.com/facebookresearch/dino/blob/master/vision_transformer.py
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/models/vision_transformer.py
+#   https://github.com/raoyongming/DynamicViT/blob/master/models/dyvit.py#L168
 
 import logging
-import os
-import warnings
 
+import torch
 from torch import Tensor
 from torch import nn
 
 
 logger = logging.getLogger("dinov2")
-
-
-XFORMERS_ENABLED = os.environ.get("XFORMERS_DISABLED") is None
-try:
-    if XFORMERS_ENABLED:
-        from xformers.ops import memory_efficient_attention, unbind
-
-        XFORMERS_AVAILABLE = True
-        warnings.warn("xFormers is available (Attention)")
-    else:
-        warnings.warn("xFormers is disabled (Attention)")
-        raise ImportError
-except ImportError:
-    XFORMERS_AVAILABLE = False
-    warnings.warn("xFormers is not available (Attention)")
 
 
 class Attention(nn.Module):
@@ -52,15 +37,32 @@ class Attention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
+    
+    def softmax_with_policy(self, attn, policy, eps=1e-6):
+        B, N, _ = policy.size()
+        B, H, N, N = attn.size()
+        attn_policy = policy.reshape(B, 1, 1, N)  # * policy.reshape(B, 1, N, 1)
+        eye = torch.eye(N, dtype=attn_policy.dtype, device=attn_policy.device).view(1, 1, N, N)
+        attn_policy = attn_policy + (1.0 - attn_policy) * eye
+        max_att = torch.max(attn, dim=-1, keepdim=True)[0]
+        attn = attn - max_att
 
-    def forward(self, x: Tensor) -> Tensor:
+        # for stable training
+        attn = attn.to(torch.float32).exp_() * attn_policy.to(torch.float32)
+        attn = (attn + eps/N) / (attn.sum(dim=-1, keepdim=True) + eps)
+        return attn.type_as(max_att)
+
+    def forward(self, x: Tensor, policy: torch.Tensor|None=None) -> Tensor:
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
 
         q, k, v = qkv[0] * self.scale, qkv[1], qkv[2]
         attn = q @ k.transpose(-2, -1)
 
-        attn = attn.softmax(dim=-1)
+        if policy is None:
+            attn = attn.softmax(dim=-1)
+        else:
+            attn = self.softmax_with_policy(attn, policy)
         attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -70,20 +72,4 @@ class Attention(nn.Module):
 
 
 class MemEffAttention(Attention):
-    def forward(self, x: Tensor, attn_bias=None) -> Tensor:
-        if not XFORMERS_AVAILABLE:
-            if attn_bias is not None:
-                raise AssertionError("xFormers is required for using nested tensors")
-            return super().forward(x)
-
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
-
-        q, k, v = unbind(qkv, 2)
-
-        x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-        x = x.reshape([B, N, C])
-
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
+    pass

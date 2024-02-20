@@ -86,9 +86,9 @@ class Block(nn.Module):
 
         self.sample_drop_ratio = drop_path
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, policy: torch.Tensor|None=None) -> Tensor:
         def attn_residual_func(x: Tensor) -> Tensor:
-            return self.ls1(self.attn(self.norm1(x)))
+            return self.ls1(self.attn(self.norm1(x), policy=policy))
 
         def ffn_residual_func(x: Tensor) -> Tensor:
             return self.ls2(self.mlp(self.norm2(x)))
@@ -249,12 +249,6 @@ class NestedTensorBlock(Block):
             x = x + ffn_residual_func(x)
             return attn_bias.split(x)
 
-    def forward(self, x_or_x_list):
-        if isinstance(x_or_x_list, Tensor):
-            return super().forward(x_or_x_list)
-        elif isinstance(x_or_x_list, list):
-            if not XFORMERS_AVAILABLE:
-                raise AssertionError("xFormers is required for using nested tensors")
-            return self.forward_nested(x_or_x_list)
-        else:
-            raise AssertionError
+    def forward(self, x_or_x_list, policy: torch.Tensor|None=None):
+        assert isinstance(x_or_x_list, Tensor)
+        return super().forward(x_or_x_list, policy=policy)
