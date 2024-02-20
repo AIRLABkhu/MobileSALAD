@@ -12,7 +12,6 @@ DINOV2_ARCHS = {
 }
 
 class Mlp(nn.Module):
-
     def __init__(self, in_features, out_features=None, act_layer=nn.GELU, drop=0., group=1):
         super().__init__()
         out_features = out_features 
@@ -34,7 +33,6 @@ class Mlp(nn.Module):
         x = self.drop(x)
         x = x.squeeze()
         return x
-
     
     
 class PredictorLG(nn.Module):
@@ -61,52 +59,9 @@ class PredictorLG(nn.Module):
         x = self.in_conv(x)
         B, N, C = x.size()
         local_x = x[:, :, :C//2]
-        global_x = (x[:, :, C//2:] * policy).sum(dim=1,
-                                                 keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
+        global_x = (x[:, :, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
         x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
         return self.out_conv(x)
-
-# class TPS_merge(nn.Module):
-#     # from pruned tokens to keep tokens
-#     def __init__(self, l2_norm=False, temperature=1) -> None:
-#         super().__init__()
-#         self.l2_norm = l2_norm
-#         self.temperature = temperature
-
-#     def get_sim(x, y, eps=1e-6, mask_eye=-100, l2_norm=True):
-
-#         if y is None:
-#             y = x
-#         if l2_norm:
-#             x = x / (x.norm(dim=-1, keepdim=True) + eps)
-#             y = y / (y.norm(dim=-1, keepdim=True) + eps)
-
-#         sim = torch.bmm(x, y.permute(0, 2, 1))
-#         if mask_eye is not None:
-#             sim.masked_fill_(
-#                 torch.eye(x.size(1), device=x.device).unsqueeze(0).bool(), mask_eye)
-#         return sim
-
-#     def forward(self, x, y):
-#         cos_sim = self.get_sim(y, x, mask_eye=None, l2_norm=False)
-#         sim_th = cos_sim.amax(dim=2, keepdims=True)
-#         mask = (cos_sim == sim_th).float()
-
-#         # N, pruned token dim, keep token dim
-#         cos_sim = mask * cos_sim
-
-#         # N,keep token dim, pruned_token dim
-#         mask = mask.permute(0, 2, 1)
-#         cos_sim = cos_sim.permute(0, 2, 1)
-#         numerator = torch.exp(cos_sim) * mask
-#         denominator = math.e + numerator.sum(dim=-1, keepdims=True)
-#         x = x * (math.e / denominator) + \
-#             torch.bmm(numerator / denominator, y)
-
-#         return x
-
-    
-
 
 
 class mod_DINOv2(nn.Module):
@@ -134,7 +89,8 @@ class mod_DINOv2(nn.Module):
         super().__init__()
 
         assert model_name in DINOV2_ARCHS.keys(), f'Unknown model name {model_name}'
-        self.model = torch.hub.load('facebookresearch/dinov2', model_name)
+        # self.model = torch.hub.load('facebookresearch/dinov2', model_name)  # without policy
+        self.model = torch.hub.load('dinov2', model_name, source='local')  # with and without policy
         self.num_channels = DINOV2_ARCHS[model_name]
         self.num_trainable_blocks = num_trainable_blocks
         self.norm_layer = norm_layer
@@ -194,7 +150,6 @@ class mod_DINOv2(nn.Module):
 
         return grid_mask
 
-
     def prune_patch(
         self, 
         x: torch.Tensor, #.....................................................| B, NP, DIM
@@ -227,8 +182,6 @@ class mod_DINOv2(nn.Module):
         masked_f = masked_f[indices].reshape(B, -1, DIM)
 
         x = torch.cat([t, masked_f], dim=1)
-        # print(masked_f.shape)
-        
         return x, indices
         
     def prune(self, x, i):
