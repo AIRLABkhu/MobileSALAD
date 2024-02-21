@@ -50,20 +50,28 @@ class DINOv2(nn.Module):
 
         B, C, H, W = x.shape
 
-        x = self.model.prepare_tokens_with_masks(x)
-        
-        # First blocks are frozen
-        with torch.no_grad():
-            for blk in self.model.blocks[:-self.num_trainable_blocks]:
+        if self.num_trainable_blocks == 0:
+            with torch.no_grad():
+                x = self.model.prepare_tokens_with_masks(x)
+                for blk in self.model.blocks:
+                    x = blk(x)
+                if self.norm_layer:
+                    x = self.model.norm(x)
+        else:
+            x = self.model.prepare_tokens_with_masks(x)
+            
+            # First blocks are frozen
+            with torch.no_grad():
+                for blk in self.model.blocks[:-self.num_trainable_blocks]:
+                    x = blk(x)
+            x = x.detach()
+
+            # Last blocks are trained
+            for blk in self.model.blocks[-self.num_trainable_blocks:]:
                 x = blk(x)
-        x = x.detach()
 
-        # Last blocks are trained
-        for blk in self.model.blocks[-self.num_trainable_blocks:]:
-            x = blk(x)
-
-        if self.norm_layer:
-            x = self.model.norm(x)
+            if self.norm_layer:
+                x = self.model.norm(x)
         
         t = x[:, 0]
         f = x[:, 1:]
@@ -72,7 +80,7 @@ class DINOv2(nn.Module):
         f = f.reshape((B, H // 14, W // 14, self.num_channels)).permute(0, 3, 1, 2)
 
         if self.return_token:
-            return f, t
+            return t, f
         return f
 
 
