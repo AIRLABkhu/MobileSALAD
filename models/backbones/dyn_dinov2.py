@@ -84,6 +84,9 @@ class Dyn_DINOv2(nn.Module):
         self.patch_row = (img_size // 14)
 
         self.keep_ratio = keep_ratio
+        self.keep_patch_list = [int(self.num_patches * i) for i in self.keep_ratio]
+        self.keep_patches = int((self.keep_patch_list[-1]) ** 0.5)
+        self.keep_patch_list[-1] = self.keep_patches**2
 
         # Dynamic ViT Precitor
         self.selectors = nn.ModuleList([PredictorLG(embed_dim=self.num_channels) for _ in self.num_trainable_blocks])
@@ -210,7 +213,7 @@ class Dyn_DINOv2(nn.Module):
                 
                 else:
                     score = pred_score[:,:,0]
-                    num_keep_node = self.val_kept_patch_list[idx]
+                    num_keep_node = self.keep_patch_list[idx]
                     keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
                     token_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
                     now_policy = torch.cat([token_policy, keep_policy + 1], dim=1)
@@ -223,12 +226,14 @@ class Dyn_DINOv2(nn.Module):
             
         t = x[:, 0]
         f = x[:, 1:]
-        f = f.reshape((B, self.patch_row, self.patch_row, self.num_channels)).permute(0, 3, 1, 2)
+        
 
         if self.training:
+            f = f.reshape((B, self.patch_row, self.patch_row, self.num_channels)).permute(0, 3, 1, 2)
             return t, f, prev_decision.detach(), out_pred_prob
 
         else:
+            f = f.reshape((B, self.keep_patches, self.keep_patches, self.num_channels)).permute(0, 3, 1, 2)
             return t, f
 
 
