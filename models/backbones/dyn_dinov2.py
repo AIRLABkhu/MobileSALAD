@@ -1,11 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
-from utils import gumbel_topk
-# from utils import gumbel_softmax
 from utils import batch_index_select
+
 
 DINOV2_ARCHS = {
     'dinov2_vits14': 384,
@@ -14,8 +12,7 @@ DINOV2_ARCHS = {
     'dinov2_vitg14': 1536,
 }
 
-    
-    
+
 class PredictorLG(nn.Module):
     """ Image to Patch Embedding
     """
@@ -66,7 +63,7 @@ class Dyn_DINOv2(nn.Module):
             num_trainable_blocks: list=[3, 6, 9],
             norm_layer=False,
             return_token=False,
-            keep_ratio: list=[0.75, 0.5, 0.25],
+            masking_ratio: float= 0.2,
         ):
         super().__init__()
 
@@ -83,107 +80,20 @@ class Dyn_DINOv2(nn.Module):
         self.num_patches = (img_size // 14)**2
         self.patch_row = (img_size // 14)
 
-        self.keep_ratio = keep_ratio
-        self.keep_patch_list = [int(self.num_patches * i) for i in self.keep_ratio]
+        self.masking_ratio = masking_ratio
+
+        self.keep_patch_list = [int(self.num_patches * (1-self.masking_ratio)**(i+1)) for i in range(len(self.num_trainable_blocks))]
         self.keep_patches = int((self.keep_patch_list[-1]) ** 0.5)
         self.keep_patch_list[-1] = self.keep_patches**2
+
+        self.ratio_list = [(1-self.masking_ratio)**(i+1) for i in range(len(self.num_trainable_blocks))]
+        self.ratio_list[-1] = self.keep_patch_list[-1] / self.num_patches
 
         # Dynamic ViT Precitor
         self.selectors = nn.ModuleList([PredictorLG(embed_dim=self.num_channels) for _ in self.num_trainable_blocks])
 
-
-    def random_mask(self, B, NP, NK):
-        all_tensors_ = []
-        for _ in range(B):
-            perm = torch.randperm(NP)
-            idx = perm[:NK]
-            tensor_ = torch.zeros(NP, dtype=torch.float)
-            tensor_[idx] = 1
-            all_tensors_.append(tensor_)
-        
-        all_tensors_ = torch.stack(all_tensors_)
-
-        return all_tensors_
-    
-    def checker_mask(self, B, NP):
-        rows = int(NP ** 0.5)
-
-        grid_mask = torch.zeros((rows, rows), dtype=torch.float)
-        grid_mask[::2, ::2] = 1
-        grid_mask[1::2, 1::2] = 1
-
-        grid_mask = grid_mask.view(-1)
-        grid_mask = grid_mask.expand(B, NP)
-
-        return grid_mask
-
-    def prune_patch(
-        self, 
-        x: torch.Tensor, #.....................................................| B, NP, DIM
-        i
-    ):
-        t = x[:, 0, None]
-        f = x[:, 1:]
-
-        B, NP, DIM = f.shape
-
-        idx = self.num_trainable_blocks.index(i)
-
-        # for random mask
-        if self.masking_mode == 'random':
-            if self.training:
-                mask_hard = self.random_mask(B, NP, self.kept_patch_list[idx])
-            else:
-                mask_hard = self.random_mask(B, NP, self.val_kept_patch_list[idx])
-        # for checker mask
-        elif self.masking_mode == 'checker':
-            mask_hard = self.checker_mask(B, NP)
-
-        mask_hard = mask_hard.unsqueeze(-1)
-        mask_hard = mask_hard.to(f.device)
-
-        masked_f = f * mask_hard
-        
-        indices = mask_hard.detach().bool()  # ................| B, NP, 1
-        indices = indices.expand_as(masked_f)  # .............| B, NP, DIM
-        masked_f = masked_f[indices].reshape(B, -1, DIM)
-
-        x = torch.cat([t, masked_f], dim=1)
-        return x, indices
-        
-    def prune(self, x, i):
-        t = x[:, 0, None]
-        f = x[:, 1:]
-
-        B, NP, DIM = f.shape
-        # policy = torch.ones(B, NP, 1, dtype=f.dtype, device=f.device)
-        idx = self.num_trainable_blocks.index(i)
-
-        selected_prob = self.selectors[idx](f)
-        # for dynamic predictor
-        # selected_prob = self.selectors[idx](f, policy)
-        if len(selected_prob.shape) == 1:
-            selected_prob = selected_prob.unsqueeze(0)
-
-        if self.training:
-            mask_hard = gumbel_topk(selected_prob, k=self.kept_patch_list[idx], dim=1)
-        else:
-            mask_hard = gumbel_topk(selected_prob, k=self.val_kept_patch_list[idx], dim=1)
-
-        if len(mask_hard.size()) == 2:
-            mask_hard = mask_hard.unsqueeze(-1)
-        mask_hard = mask_hard.expand_as(f)
-        masked_f = f * mask_hard
-        masked_f = masked_f[mask_hard.detach().bool()].reshape(B, -1, DIM)
-
-        x = torch.cat([t, masked_f], dim=1)
-
-        return x, mask_hard
-
     def forward(self, x):
-
         x = self.model.prepare_tokens_with_masks(x)
-
         B, NP, DIM = x.shape # NP means number of patch include token ( 256 + 1 )
         
         out_pred_prob = []
@@ -210,7 +120,7 @@ class Dyn_DINOv2(nn.Module):
                     policy = torch.cat([token_policy, hard_keep_decision], dim=1)
                     x = blk(x, policy=policy)
                     prev_decision = hard_keep_decision
-                
+                    
                 else:
                     score = pred_score[:,:,0]
                     num_keep_node = self.keep_patch_list[idx]
@@ -227,7 +137,6 @@ class Dyn_DINOv2(nn.Module):
         t = x[:, 0]
         f = x[:, 1:]
         
-
         if self.training:
             f = f.reshape((B, self.patch_row, self.patch_row, self.num_channels)).permute(0, 3, 1, 2)
             return t, f, prev_decision.detach(), out_pred_prob
@@ -235,15 +144,3 @@ class Dyn_DINOv2(nn.Module):
         else:
             f = f.reshape((B, self.keep_patches, self.keep_patches, self.num_channels)).permute(0, 3, 1, 2)
             return t, f
-
-
-
-# if __name__ == '__main__':
-#     import timm
-#     DEVICE = 6
-    
-#     sample = torch.randn(2, 3, 224, 224).cuda(DEVICE)
-#     net1 = mod_DINOv2(return_token=True).cuda(DEVICE)
-    
-#     f, t = net1(sample)
-    

@@ -29,6 +29,8 @@ if __name__ == '__main__':
     parser.add_argument('--check-val', type=int, default=1)
     parser.add_argument('--lr', type=float, default=6e-6)
 
+    parser.add_argument('--masking-ratio', type=float, default=0.2)
+
     # parser.add_argument('--trainable_blocks', default=)
 
     args = parser.parse_args()
@@ -40,7 +42,7 @@ if __name__ == '__main__':
         shuffle_all=False, # shuffle all images or keep shuffling in-city only
         random_sample_from_each_place=True,
         image_size=(224, 224),
-        num_workers=8,
+        num_workers=6,
         persistent_workers=True, # for CPU
         show_data_stats=True,
         val_set_names=[
@@ -63,7 +65,7 @@ if __name__ == '__main__':
             'num_trainable_blocks': [8,9,10],
             'return_token': True,
             'norm_layer': True,
-            'keep_ratio': [0.75, 0.5, 0.25],
+            'masking_ratio': args.masking_ratio,
         },
 
         teacher_arch = backbone_arch,
@@ -118,13 +120,12 @@ if __name__ == '__main__':
 
     trainer = pl.Trainer(
         accelerator='gpu', 
-        strategy=DeepSpeedStrategy(),
-        devices=[0, 1],
+        devices=[args.device],
         default_root_dir=f'./logs/{args.tag}', # Tensorflow can be used to viz 
         num_nodes=1,
         num_sanity_val_steps=0, # runs a validation step before stating training
         # precision='16-mixed', # we use half precision to reduce memory usage
-        precision='16', # we use half precision to reduce memory usage
+        # precision='16', # we use half precision to reduce memory usage
         max_epochs=args.epochs,  # increased by 8 because the batch was halved. 
         check_val_every_n_epoch=args.check_val, # run validation every epoch
         callbacks=[checkpoint_cb],# we only run the checkpointing callback (you can add more)
@@ -135,3 +136,4 @@ if __name__ == '__main__':
 
     # we call the trainer, we give it the model and the datamodule
     trainer.fit(model=model, datamodule=datamodule)
+    # trainer.validate(model=model, datamodule=datamodule)

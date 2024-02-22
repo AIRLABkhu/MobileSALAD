@@ -192,10 +192,10 @@ class VPRModel(pl.LightningModule):
         distill_loss = nn.functional.mse_loss(s_desc, t_desc)
 
         pred_loss = 0.0
-        ratio = self.backbone.keep_ratio
+        keep_ratio = self.backbone.ratio_list
         for i, score in enumerate(s_out_pred_prob):
             pos_ratio = score.mean(dim=1)
-            pred_loss = pred_loss + ((pos_ratio - ratio[i]) ** 2).mean()
+            pred_loss = pred_loss + ((pos_ratio - keep_ratio[i]) ** 2).mean()
 
         loss = loss + distill_loss + pred_loss
     
