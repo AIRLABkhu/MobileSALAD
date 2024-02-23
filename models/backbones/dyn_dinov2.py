@@ -82,10 +82,12 @@ class Dyn_DINOv2(nn.Module):
 
         self.masking_ratio = masking_ratio
 
+        # patch 개수
         self.keep_patch_list = [int(self.num_patches * (1-self.masking_ratio)**(i+1)) for i in range(len(self.num_trainable_blocks))]
         self.keep_patches = int((self.keep_patch_list[-1]) ** 0.5)
         self.keep_patch_list[-1] = self.keep_patches**2
 
+        # keep ratio list
         self.ratio_list = [(1-self.masking_ratio)**(i+1) for i in range(len(self.num_trainable_blocks))]
         self.ratio_list[-1] = self.keep_patch_list[-1] / self.num_patches
 
@@ -103,11 +105,8 @@ class Dyn_DINOv2(nn.Module):
             # early blocks are frozen
             if i < self.num_trainable_blocks[0]:
                 with torch.no_grad():
-                    if self.training:
-                        x = blk(x, policy)
-                    else:
-                        x = blk(x)
-            # pruning 
+                    x = blk(x)
+
             elif i in self.num_trainable_blocks:
                 spatial_x = x[:, 1:] # except global token
                 idx = self.num_trainable_blocks.index(i)
@@ -129,6 +128,12 @@ class Dyn_DINOv2(nn.Module):
                     now_policy = torch.cat([token_policy, keep_policy + 1], dim=1)
                     x = batch_index_select(x, now_policy)
                     prev_decision = batch_index_select(prev_decision, keep_policy)
+                    x = blk(x)
+
+            else:
+                if self.training:
+                    x = blk(x, policy)
+                else:
                     x = blk(x)
 
         if self.norm_layer:

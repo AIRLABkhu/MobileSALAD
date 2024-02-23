@@ -97,7 +97,6 @@ class VPRModel(pl.LightningModule):
     def forward(self, x):
         if self.training:
             s_t, s_f, s_prev_decision, s_out_pred_prob = self.backbone(x)
-            # s_out = self.aggregator((s_f, s_t))
             with torch.no_grad():
                 t_t, t_f = self.teacher(x)
             return self.aggregator((s_f, s_t)), self.aggregator((t_f, t_t)), s_t, s_f, s_prev_decision, s_out_pred_prob
@@ -194,6 +193,8 @@ class VPRModel(pl.LightningModule):
         pred_loss = 0.0
         keep_ratio = self.backbone.ratio_list
         for i, score in enumerate(s_out_pred_prob):
+            print(f'{pos_ratio.shape=}')
+            print(f'{keep_ratio.shape=}')
             pos_ratio = score.mean(dim=1)
             pred_loss = pred_loss + ((pos_ratio - keep_ratio[i]) ** 2).mean()
 

@@ -113,7 +113,7 @@ if __name__ == '__main__':
         filename=f'{model.encoder_arch}' + '_({epoch:02d})_R1[{pitts250k_val/R1:.4f}]_R5[{pitts250k_val/R5:.4f}]',
         auto_insert_metric_name=False,
         save_weights_only=True,
-        save_top_k=3,
+        save_top_k=1,
         save_last=True,
         mode='max'
     )
