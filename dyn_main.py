@@ -42,8 +42,8 @@ if __name__ == '__main__':
         shuffle_all=False, # shuffle all images or keep shuffling in-city only
         random_sample_from_each_place=True,
         image_size=(224, 224),
-        num_workers=6,
-        persistent_workers=True, # for CPU
+        num_workers=2,
+        pin_memory=True,
         show_data_stats=True,
         val_set_names=[
             # 'pitts30k_val', 
@@ -124,8 +124,6 @@ if __name__ == '__main__':
         default_root_dir=f'./logs/{args.tag}', # Tensorflow can be used to viz 
         num_nodes=1,
         num_sanity_val_steps=0, # runs a validation step before stating training
-        # precision='16-mixed', # we use half precision to reduce memory usage
-        # precision='16', # we use half precision to reduce memory usage
         max_epochs=args.epochs,  # increased by 8 because the batch was halved. 
         check_val_every_n_epoch=args.check_val, # run validation every epoch
         callbacks=[checkpoint_cb],# we only run the checkpointing callback (you can add more)
