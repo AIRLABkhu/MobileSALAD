@@ -51,6 +51,7 @@ class GSVCitiesDataModule(pl.LightningDataModule):
                  shuffle_all=False,
                  image_size=(480, 640),
                  num_workers=4,
+                 pin_memory=False, # for CPU
                  persistent_workers=False, # for CPU
                  show_data_stats=True,
                  cities=TRAIN_CITIES,
@@ -74,6 +75,7 @@ class GSVCitiesDataModule(pl.LightningDataModule):
         self.random_sample_from_each_place = random_sample_from_each_place
         self.val_set_names = val_set_names
         self.persistent_workers = persistent_workers
+        self.pin_memory = pin_memory
         self.save_hyperparameters() # save hyperparameter with Pytorch Lightening
 
         # self.train_transform = T.Compose([
@@ -106,15 +108,15 @@ class GSVCitiesDataModule(pl.LightningDataModule):
             'num_workers': self.num_workers,
             'persistent_workers': self.persistent_workers,
             'drop_last': False,
-            'pin_memory': False,
+            'pin_memory': self.pin_memory,
             'shuffle': self.shuffle_all}
 
         self.valid_loader_config = {
             'batch_size': self.batch_size,
-            'num_workers': self.num_workers//2,
+            'num_workers': self.num_workers,
             'persistent_workers': self.persistent_workers,
             'drop_last': False,
-            'pin_memory': False,
+            'pin_memory': self.pin_memory,
             'shuffle': False}
 
     def setup(self, stage):
@@ -131,8 +133,6 @@ class GSVCitiesDataModule(pl.LightningDataModule):
                 self.val_datasets.append(PittsburgDataset.get_whole_val_set(
                     input_transform=self.valid_transform))
                 
-            ## 수정한 부분 체크
-            ## 시작
             elif valid_set_name.lower() == 'pitts250k_test':
                 self.val_datasets.append(PittsburgDataset.get_250k_test_set(
                     input_transform=self.valid_transform))
@@ -146,7 +146,6 @@ class GSVCitiesDataModule(pl.LightningDataModule):
             elif valid_set_name.lower() == 'sped':
                 self.val_datasets.append(SPEDDataset(
                     input_transform=self.valid_transform))
-            ## 끝
                 
             elif valid_set_name.lower() == 'msls_val':
                 self.val_datasets.append(MapillaryDataset.MSLS(
