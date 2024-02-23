@@ -26,7 +26,20 @@ def get_backbone(
     #     return backbones.mod_DINOv2(model_name=backbone_config['model_name'], **backbone_config)
 
     elif 'dinov2' in backbone_arch.lower():
-        return backbones.mod_DINOv2(**backbone_config)
+        return backbones.Dyn_DINOv2(**backbone_config)
+
+def get_teacher(
+        teacher_arch='resnet50',
+        teacher_config={}
+    ):
+    if 'resnet' in teacher_arch.lower():
+        return backbones.ResNet(teacher_arch, **teacher_config)
+    
+    elif 'effdinov2' in teacher_arch.lower():
+        return backbones.EffDINOv2(**teacher_config)
+
+    elif 'dinov2' in teacher_arch.lower():
+        return backbones.DINOv2(**teacher_config)
 
 
 def get_aggregator(agg_arch='ConvAP', agg_config={}):
