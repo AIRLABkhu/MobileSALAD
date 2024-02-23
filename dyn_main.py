@@ -30,6 +30,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=6e-6)
 
     parser.add_argument('--masking-ratio', type=float, default=0.2)
+    parser.add_argument('--prun-loc', type=int, nargs='+', default=[8,9,10])
 
     # parser.add_argument('--trainable_blocks', default=)
 
@@ -62,7 +63,7 @@ if __name__ == '__main__':
         backbone_arch=backbone_arch,
         backbone_config={
             'model_name': backbone_arch,
-            'num_trainable_blocks': [8,9,10],
+            'num_trainable_blocks': args.prun_loc,
             'return_token': True,
             'norm_layer': True,
             'masking_ratio': args.masking_ratio,
