@@ -251,11 +251,24 @@ class DinoVisionTransformer(nn.Module):
         if isinstance(x, list):
             return self.forward_features_list(x, masks)
 
-        x = self.prepare_tokens_with_masks(x, masks)
-
-        for blk in self.blocks:
-            x = blk(x)
-
+        x = self.forward_pre(x, masks=masks)
+        x = self.forward_blocks(x)
+        ret = self.forward_post(x, masks=masks)
+        return ret
+        
+    def forward_pre(self, x, masks=None):
+        return self.prepare_tokens_with_masks(x, masks=masks)
+    
+    def forward_blocks(self, x, index: slice|int=slice(None), return_attention: bool=False):
+        if isinstance(index, int):
+            return self.blocks[index](x, return_attention=return_attention)
+        else:
+            assert not return_attention
+            for blk in self.blocks[index]:
+                x = blk(x)
+            return x
+        
+    def forward_post(self, x, masks=None):
         x_norm = self.norm(x)
         return {
             "x_norm_clstoken": x_norm[:, 0],

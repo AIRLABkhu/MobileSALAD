@@ -2,19 +2,34 @@ import os
 from typing import Iterator
 from pathlib import Path
 import yaml
-from copy import deepcopy
 
 import pytorch_lightning as pl
 import torch
 from torch import nn
 from torch.nn.parameter import Parameter
 from torch.optim import lr_scheduler, optimizer
+from torchvision import transforms
 
 import utils
 from models import helper
 
 
-class VPRModel(pl.LightningModule):
+DINOV2_DIMS = {
+    'dinov2_vits14': 384,
+    'dinov2_vitb14': 768,
+    'dinov2_vitl14': 1024,
+    'dinov2_vitg14': 1536,
+}
+
+DINOV2_N_HEADS = {
+    'dinov2_vits14': 6,
+    'dinov2_vitb14': 12,
+    'dinov2_vitl14': 16,
+    'dinov2_vitg14': 24,
+}
+
+
+class DistillationModel(pl.LightningModule):
     """This is the main model for Visual Place Recognition
     we use Pytorch Lightning for modularity purposes.
 
@@ -55,7 +70,7 @@ class VPRModel(pl.LightningModule):
         faiss_device=0
     ):
         super().__init__()
-        teacher_config = os.path.join('logs', teacher_config, 'lightning_logs', 'version_0')
+        teacher_config = os.path.join(teacher_config, 'lightning_logs', 'version_0')
         hparams_filename = os.path.join(teacher_config, 'hparams.yaml')
         ckpt_filename = os.path.join(teacher_config, 'checkpoints', 'last.ckpt')
         
@@ -72,12 +87,12 @@ class VPRModel(pl.LightningModule):
         self.backbone_config = teacher_hparams['backbone_config']
 
         self.student_arch = student_arch
-        self.student_config = dict(
+        self.student_config = {
             **student_config,
-            model_name=student_arch,
-            num_trainable_blocks=[0],
-            masking_ratio=0,
-        )
+            'model_name': student_arch,
+            'num_trainable_blocks': self.backbone_config['num_trainable_blocks'][-1:],
+            'masking_ratio': 0,
+        }
         
         # Aggregator
         self.agg_arch = teacher_hparams['agg_arch']
@@ -107,9 +122,16 @@ class VPRModel(pl.LightningModule):
         
         # ----------------------------------
         # get the backbone and the aggregator
+        self.resize_fn = transforms.Resize(size=(self.student_config['img_size'],))
+        
         self.backbone = helper.get_backbone(self.encoder_arch, self.backbone_config)
         self.aggregator = helper.get_aggregator(self.agg_arch, self.agg_config)
         self.student = helper.get_backbone(self.student_arch, self.student_config)
+        
+        backbone_num_heads = DINOV2_N_HEADS[self.encoder_arch]
+        student_num_heads = DINOV2_N_HEADS[self.student_arch]
+        self.attn_align_fn = nn.Conv2d(backbone_num_heads, student_num_heads, kernel_size=1)
+        self.student.align_fn = nn.Linear(DINOV2_DIMS[self.student_arch], DINOV2_DIMS[self.encoder_arch])
         
         self.backbone.load_state_dict(backbone_state_dict)
         self.aggregator.load_state_dict(aggregator_state_dict)
@@ -120,19 +142,19 @@ class VPRModel(pl.LightningModule):
     # the forward pass of the lightning model
     def forward(self, x):
         if self.training:
-            s_t, s_f, s_prev_decision, s_out_pred_prob = self.backbone(x)
-            # s_out = self.aggregator((s_f, s_t))
             with torch.no_grad():
-                t_t, t_f = self.teacher(x)
-            return self.aggregator((s_f, s_t)), self.aggregator((t_f, t_t)), s_t, s_f, s_prev_decision, s_out_pred_prob
+                t_t, t_f, t_attn = self.backbone.eval()(x, mode='distill')
+            s_t, s_f, s_attn = self.student(self.resize_fn(x), mode='distill')
+            return self.aggregator((s_f, s_t)), self.aggregator((t_f, t_t)), s_attn, self.attn_align_fn(t_attn)
         else:
-            p_t, p_f = self.backbone(x)
+            p_t, p_f = self.student(self.resize_fn(x))
             return self.aggregator((p_f, p_t))
 
     @utils.yield_as(list)
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
         yield from self.student.parameters(recurse=recurse)
-        # yield from self.aggregator.parameters(recurse=recurse)
+        yield from self.attn_align_fn.parameters(recurse=recurse)
+        yield from self.aggregator.parameters(recurse=recurse)
     
     # configure the optimizer 
     def configure_optimizers(self):
@@ -179,7 +201,8 @@ class VPRModel(pl.LightningModule):
         self.lr_schedulers().step()
         
     #  The loss function call (this method will be called at each training iteration)
-    def loss_function(self, s_desc, t_desc, labels, s_out_pred_prob, log_accuracy: bool=False):
+    def loss_function(self, s_desc, t_desc, labels, s_attn, t_attn, log_accuracy: bool=False):
+        ## This part is same as pruning part.
         # we mine the pairs/triplets if there is an online mining strategy
         if self.miner is not None:
             miner_outputs = self.miner(s_desc, labels)
@@ -208,16 +231,10 @@ class VPRModel(pl.LightningModule):
             self.log('b_acc', sum(self.batch_acc) /
                     len(self.batch_acc), prog_bar=True, logger=True)
             
-        distill_loss = nn.functional.mse_loss(s_desc, t_desc)
+        dist_desc_loss = nn.functional.mse_loss(s_desc, t_desc)
+        dist_attn_loss = nn.functional.mse_loss(s_attn, t_attn)
 
-        pred_loss = 0.0
-        keep_ratio = self.backbone.ratio_list
-        for i, score in enumerate(s_out_pred_prob):
-            pos_ratio = score.mean(dim=1)
-            pred_loss = pred_loss + ((pos_ratio - keep_ratio[i]) ** 2).mean()
-
-        loss = loss + distill_loss + pred_loss
-    
+        loss = loss + dist_desc_loss + dist_attn_loss
         return loss
     
     # This is the training step that's executed at each iteration
@@ -237,7 +254,7 @@ class VPRModel(pl.LightningModule):
         # Feed forward the ba6tch to the model
         # Here we are calling the method forward that we defined above
 
-        s_desc, t_desc, _, _, s_prev_decision, s_out_pred_prob = self(images)
+        s_desc, t_desc, s_attn, t_attn = self(images)
 
         if torch.isnan(s_desc).any():
             raise ValueError('NaNs in descriptors (student descriptor)')
@@ -245,7 +262,7 @@ class VPRModel(pl.LightningModule):
             raise ValueError('NaNs in descriptors (teacher descriptor)')
 
         # Call the loss_function we defined above
-        loss = self.loss_function(s_desc, t_desc, labels, s_out_pred_prob, log_accuracy=True) 
+        loss = self.loss_function(s_desc, t_desc, labels, s_attn, t_attn, log_accuracy=True) 
         self.log('loss', loss.item(), logger=True, prog_bar=True)
         return {'loss': loss}
     

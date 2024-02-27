@@ -1,3 +1,5 @@
+from typing import Literal
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -91,11 +93,13 @@ class Dyn_DINOv2(nn.Module):
 
         # Dynamic ViT Precitor
         self.selectors = nn.ModuleList([PredictorLG(embed_dim=self.num_channels) for _ in self.num_trainable_blocks])
+        self.align_fn = nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x, mode: Literal['pruning', 'distill']='pruning'):
         x = self.model.prepare_tokens_with_masks(x)
         B, NP, DIM = x.shape # NP means number of patch include token ( 256 + 1 )
         
+        attn = None
         out_pred_prob = []
         prev_decision = torch.ones(B, NP-1, 1, dtype=x.dtype, device=x.device)
         policy = torch.ones(B, NP, 1, dtype=x.dtype, device=x.device)
@@ -118,7 +122,7 @@ class Dyn_DINOv2(nn.Module):
                     out_pred_prob.append(hard_keep_decision.reshape(B, NP-1))
                     token_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
                     policy = torch.cat([token_policy, hard_keep_decision], dim=1)
-                    x = blk(x, policy=policy)
+                    x, attn = blk(x, policy=policy, return_attention=True)
                     prev_decision = hard_keep_decision
                     
                 else:
@@ -129,18 +133,29 @@ class Dyn_DINOv2(nn.Module):
                     now_policy = torch.cat([token_policy, keep_policy + 1], dim=1)
                     x = batch_index_select(x, now_policy)
                     prev_decision = batch_index_select(prev_decision, keep_policy)
-                    x = blk(x)
+                    x, attn = blk(x, return_attention=True)
 
         if self.norm_layer:
             x = self.model.norm(x)
+        x = self.align_fn(x)
             
         t = x[:, 0]
         f = x[:, 1:]
         
         if self.training:
-            f = f.reshape((B, self.patch_row, self.patch_row, self.num_channels)).permute(0, 3, 1, 2)
-            return t, f, prev_decision.detach(), out_pred_prob
-
+            patches_row = int(f.size(1) ** 0.5)
+            f = f.reshape((B, patches_row, patches_row, -1)).permute(0, 3, 1, 2)
         else:
-            f = f.reshape((B, self.keep_patches, self.keep_patches, self.num_channels)).permute(0, 3, 1, 2)
-            return t, f
+            f = f.reshape((B, self.keep_patches, self.keep_patches, -1)).permute(0, 3, 1, 2)
+            
+        if not self.training:
+            if mode == 'distill':
+                return t, f, attn
+            else:
+                return t, f
+        elif mode == 'pruning':
+            return t, f, prev_decision.detach(), out_pred_prob
+        elif mode == 'distill':
+            return t, f, attn
+        else:
+            raise NameError

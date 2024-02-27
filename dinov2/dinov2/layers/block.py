@@ -86,9 +86,14 @@ class Block(nn.Module):
 
         self.sample_drop_ratio = drop_path
 
-    def forward(self, x: Tensor, policy: torch.Tensor|None=None) -> Tensor:
+    def forward(self, x: Tensor, policy: torch.Tensor|None=None, return_attention: bool=False) -> Tensor:
         def attn_residual_func(x: Tensor) -> Tensor:
-            return self.ls1(self.attn(self.norm1(x), policy=policy))
+            x = self.norm1(x)
+            if return_attention:
+                x, attn = self.attn(x, policy=policy, return_attention=True)
+            else:
+                x, attn = self.attn(x, policy=policy, return_attention=False), None
+            return self.ls1(x), attn
 
         def ffn_residual_func(x: Tensor) -> Tensor:
             return self.ls2(self.mlp(self.norm2(x)))
@@ -99,25 +104,35 @@ class Block(nn.Module):
                 x,
                 residual_func=attn_residual_func,
                 sample_drop_ratio=self.sample_drop_ratio,
+                return_attention=return_attention,
             )
+            if return_attention:
+                x, attn = x
             x = drop_add_residual_stochastic_depth(
                 x,
                 residual_func=ffn_residual_func,
                 sample_drop_ratio=self.sample_drop_ratio,
             )
         elif self.training and self.sample_drop_ratio > 0.0:
-            x = x + self.drop_path1(attn_residual_func(x))
+            x_, attn = attn_residual_func(x)
+            x = x + self.drop_path1(x_)
             x = x + self.drop_path2(ffn_residual_func(x)) 
         else:
-            x = x + attn_residual_func(x)
+            x_, attn = attn_residual_func(x)
+            x = x + x_
             x = x + ffn_residual_func(x)
-        return x
+            
+        if return_attention:
+            return x, attn
+        else:
+            return x
 
 
 def drop_add_residual_stochastic_depth(
     x: Tensor,
     residual_func: Callable[[Tensor], Tensor],
     sample_drop_ratio: float = 0.0,
+    return_attention: bool=False,
 ) -> Tensor:
     # 1) extract subset using permutation
     b, n, d = x.shape
@@ -127,6 +142,10 @@ def drop_add_residual_stochastic_depth(
 
     # 2) apply residual_func to get residual
     residual = residual_func(x_subset)
+    if return_attention:
+        residual, attn = residual
+    else:
+        attn = None
 
     x_flat = x.flatten(1)
     residual = residual.flatten(1)
@@ -135,7 +154,10 @@ def drop_add_residual_stochastic_depth(
 
     # 3) add the residual
     x_plus_residual = torch.index_add(x_flat, 0, brange, residual.to(dtype=x.dtype), alpha=residual_scale_factor)
-    return x_plus_residual.view_as(x)
+    if return_attention:
+        return x_plus_residual.view_as(x), attn
+    else:
+        return x_plus_residual.view_as(x)
 
 
 def get_branges_scales(x, sample_drop_ratio=0.0):
@@ -209,6 +231,7 @@ def drop_add_residual_stochastic_depth_list(
 
 
 class NestedTensorBlock(Block):
+    pass
     def forward_nested(self, x_list: List[Tensor]) -> List[Tensor]:
         """
         x_list contains a list of tensors to nest together and run
@@ -249,6 +272,6 @@ class NestedTensorBlock(Block):
             x = x + ffn_residual_func(x)
             return attn_bias.split(x)
 
-    def forward(self, x_or_x_list, policy: torch.Tensor|None=None):
+    def forward(self, x_or_x_list, policy: torch.Tensor|None=None, return_attention: bool=False):
         assert isinstance(x_or_x_list, Tensor)
-        return super().forward(x_or_x_list, policy=policy)
+        return super().forward(x_or_x_list, policy=policy, return_attention=return_attention)

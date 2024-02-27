@@ -52,7 +52,7 @@ class Attention(nn.Module):
         attn = (attn + eps/N) / (attn.sum(dim=-1, keepdim=True) + eps)
         return attn.type_as(max_att)
 
-    def forward(self, x: Tensor, policy: torch.Tensor|None=None) -> Tensor:
+    def forward(self, x: Tensor, policy: torch.Tensor|None=None, return_attention: bool=False):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
 
@@ -60,15 +60,19 @@ class Attention(nn.Module):
         attn = q @ k.transpose(-2, -1)
 
         if policy is None:
-            attn = attn.softmax(dim=-1)
+            attn_sm = attn.softmax(dim=-1)
         else:
-            attn = self.softmax_with_policy(attn, policy)
-        attn = self.attn_drop(attn)
+            attn_sm = self.softmax_with_policy(attn, policy)
+        attn_dr = self.attn_drop(attn_sm)
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = (attn_dr @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+        
+        if return_attention:
+            return x, attn
+        else:
+            return x
 
 
 class MemEffAttention(Attention):
