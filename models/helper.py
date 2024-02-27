@@ -24,6 +24,9 @@ def get_backbone(
     
     # elif 'mod' in backbone_arch.lower():
     #     return backbones.mod_DINOv2(model_name=backbone_config['model_name'], **backbone_config)
+    
+    elif 'ori_dinov2' in backbone_arch.lower():
+        return backbones.DINOv2(**backbone_config)
 
     elif 'dinov2' in backbone_arch.lower():
         return backbones.Dyn_DINOv2(**backbone_config)
