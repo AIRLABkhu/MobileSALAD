@@ -95,7 +95,7 @@ class Dyn_DINOv2(nn.Module):
         self.selectors = nn.ModuleList([PredictorLG(embed_dim=self.num_channels) for _ in self.num_trainable_blocks])
         self.align_fn = nn.Identity()
 
-    def forward(self, x, mode: Literal['pruning', 'distill']='pruning'):
+    def forward(self, x, role: Literal['student, teacher'], mode: Literal['pruning', 'distill']='pruning'):
         x = self.model.prepare_tokens_with_masks(x)
         B, NP, DIM = x.shape # NP means number of patch include token ( 256 + 1 )
         
@@ -104,37 +104,45 @@ class Dyn_DINOv2(nn.Module):
         prev_decision = torch.ones(B, NP-1, 1, dtype=x.dtype, device=x.device)
         policy = torch.ones(B, NP, 1, dtype=x.dtype, device=x.device)
         for i, blk in enumerate(self.model.blocks):
+            if role == 'teacher':
             # early blocks are frozen
-            if i < self.num_trainable_blocks[0]:
-                with torch.no_grad():
-                    if self.training:
-                        x = blk(x, policy)
-                    else:
-                        x = blk(x)
-            # pruning 
-            elif i in self.num_trainable_blocks:
-                spatial_x = x[:, 1:] # except global token
-                idx = self.num_trainable_blocks.index(i)
-                pred_score = self.selectors[idx](spatial_x, prev_decision).reshape(B, -1, 2) # we will use gumble_topk so we need just 1 dimension
-                
-                if self.training:
-                    hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * prev_decision
-                    out_pred_prob.append(hard_keep_decision.reshape(B, NP-1))
-                    token_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
-                    policy = torch.cat([token_policy, hard_keep_decision], dim=1)
-                    x, attn = blk(x, policy=policy, return_attention=True)
-                    prev_decision = hard_keep_decision
-                    
-                else:
-                    score = pred_score[:,:,0]
-                    num_keep_node = self.keep_patch_list[idx]
-                    keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
-                    token_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
-                    now_policy = torch.cat([token_policy, keep_policy + 1], dim=1)
-                    x = batch_index_select(x, now_policy)
-                    prev_decision = batch_index_select(prev_decision, keep_policy)
-                    x, attn = blk(x, return_attention=True)
+                if i < self.num_trainable_blocks[0]:
+                    with torch.no_grad():
+                        if self.training:
+                            x = blk(x, policy)
+                        else:
+                            x = blk(x)
+                # pruning 
+                elif i in self.num_trainable_blocks:
+                    spatial_x = x[:, 1:] # except global token
+                    idx = self.num_trainable_blocks.index(i)
+                    pred_score = self.selectors[idx](spatial_x, prev_decision).reshape(B, -1, 2) # we will use gumble_topk so we need just 1 dimension
 
+                    if self.training:
+                        hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * prev_decision
+                        out_pred_prob.append(hard_keep_decision.reshape(B, NP-1))
+                        token_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
+                        policy = torch.cat([token_policy, hard_keep_decision], dim=1)
+                        x, attn = blk(x, policy=policy, return_attention=True)
+                        prev_decision = hard_keep_decision
+                        
+                    else:
+                        score = pred_score[:,:,0]
+                        num_keep_node = self.keep_patch_list[idx]
+                        keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
+                        token_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
+                        now_policy = torch.cat([token_policy, keep_policy + 1], dim=1)
+                        x = batch_index_select(x, now_policy)
+                        prev_decision = batch_index_select(prev_decision, keep_policy)
+                        x, attn = blk(x, return_attention=True)
+
+        
+            elif role=='student':
+                if  i in self.num_trainable_blocks:
+                    x, attn = blk(x, return_attention=True)
+                else:
+                    x = blk(x, return_attention=False)
+                
         if self.norm_layer:
             x = self.model.norm(x)
         x = self.align_fn(x)

@@ -7,6 +7,7 @@ import pytorch_lightning as pl
 import torch
 from torch import nn
 from torch.nn.parameter import Parameter
+import torch.nn.functional as F
 from torch.optim import lr_scheduler, optimizer
 from torchvision import transforms
 
@@ -125,7 +126,8 @@ class DistillationModel(pl.LightningModule):
         self.resize_fn = transforms.Resize(size=(self.student_config['img_size'],))
         
         self.backbone = helper.get_backbone(self.encoder_arch, self.backbone_config)
-        self.aggregator = helper.get_aggregator(self.agg_arch, self.agg_config)
+        self.student_aggregator = helper.get_aggregator(self.agg_arch, self.agg_config)
+        self.teacher_aggregator = helper.get_aggregator(self.agg_arch, self.agg_config)
         self.student = helper.get_backbone(self.student_arch, self.student_config)
         
         backbone_num_heads = DINOV2_N_HEADS[self.encoder_arch]
@@ -134,8 +136,8 @@ class DistillationModel(pl.LightningModule):
         self.student.align_fn = nn.Linear(DINOV2_DIMS[self.student_arch], DINOV2_DIMS[self.encoder_arch])
         
         self.backbone.load_state_dict(backbone_state_dict)
-        self.aggregator.load_state_dict(aggregator_state_dict)
-
+        self.student_aggregator.load_state_dict(aggregator_state_dict)
+        self.teacher_aggregator.load_state_dict(aggregator_state_dict)
         # For validation in Lightning v2.0.0
         self.val_outputs = []
         
@@ -143,18 +145,18 @@ class DistillationModel(pl.LightningModule):
     def forward(self, x):
         if self.training:
             with torch.no_grad():
-                t_t, t_f, t_attn = self.backbone.eval()(x, mode='distill')
-            s_t, s_f, s_attn = self.student(self.resize_fn(x), mode='distill')
-            return self.aggregator((s_f, s_t)), self.aggregator((t_f, t_t)), s_attn, self.attn_align_fn(t_attn)
+                t_t, t_f, t_attn = self.backbone.eval()(x, role='teacher', mode='distill')
+            s_t, s_f, s_attn = self.student(self.resize_fn(x), role='student', mode='distill')
+            return self.student_aggregator((s_f, s_t)), self.teacher_aggregator((t_f, t_t)), s_attn, self.attn_align_fn(t_attn)
         else:
-            p_t, p_f = self.student(self.resize_fn(x))
-            return self.aggregator((p_f, p_t))
+            p_t, p_f, _ = self.student(self.resize_fn(x), role='student', mode='distill')
+            return self.student_aggregator((p_f, p_t))
 
     @utils.yield_as(list)
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
         yield from self.student.parameters(recurse=recurse)
         yield from self.attn_align_fn.parameters(recurse=recurse)
-        yield from self.aggregator.parameters(recurse=recurse)
+        yield from self.student_aggregator.parameters(recurse=recurse)
     
     # configure the optimizer 
     def configure_optimizers(self):
@@ -231,11 +233,12 @@ class DistillationModel(pl.LightningModule):
             self.log('b_acc', sum(self.batch_acc) /
                     len(self.batch_acc), prog_bar=True, logger=True)
             
-        dist_desc_loss = nn.functional.mse_loss(s_desc, t_desc)
+        dist_desc_loss = (1 - F.cosine_similarity(s_desc, t_desc, dim=-1).mean())
+        # dist_desc_loss = nn.functional.mse_loss(s_desc, t_desc)
         dist_attn_loss = nn.functional.mse_loss(s_attn, t_attn)
 
         loss = loss + dist_desc_loss + dist_attn_loss
-        return loss
+        return loss, dist_desc_loss, dist_attn_loss
     
     # This is the training step that's executed at each iteration
     def training_step(self, batch, batch_idx):
@@ -262,8 +265,10 @@ class DistillationModel(pl.LightningModule):
             raise ValueError('NaNs in descriptors (teacher descriptor)')
 
         # Call the loss_function we defined above
-        loss = self.loss_function(s_desc, t_desc, labels, s_attn, t_attn, log_accuracy=True) 
+        loss, dist_desc_loss, dist_attn_loss = self.loss_function(s_desc, t_desc, labels, s_attn, t_attn, log_accuracy=True) 
         self.log('loss', loss.item(), logger=True, prog_bar=True)
+        self.log('dist_desc_loss', dist_desc_loss.item(), logger=False, prog_bar=True)
+        self.log('dist_attn_loss', dist_attn_loss.item(), logger=False, prog_bar=True)
         return {'loss': loss}
     
     def on_train_epoch_end(self):
