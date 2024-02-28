@@ -15,6 +15,40 @@ import utils
 from models import helper
 
 
+class CBAM(nn.Module):
+    def __init__(self, input_patch, input_dim, output_patch, output_dim, last_kernel_size: int=7):
+        super(CBAM, self).__init__()
+
+        self.apply_pool = (input_patch != output_patch)
+
+        self.last_kernel_size = last_kernel_size
+        self.kernel_size = input_patch - output_patch - last_kernel_size + 2
+
+        if self.apply_pool:
+            self.max_pool = nn.MaxPool2d(kernel_size=self.kernel_size, stride=1)
+            self.avg_pool = nn.AvgPool2d(kernel_size=self.kernel_size, stride=1)
+            self.last_conv = nn.Conv2d(input_dim * 2, output_dim, kernel_size=last_kernel_size)
+        else:
+            self.max_pool, self.avg_pool = None, None
+            self.last_conv = nn.Conv2d(input_dim, output_dim, kernel_size=1)
+
+    def forward(self, x):
+        '''
+        Inputs:
+            batch_size, num_heads, patch_size, patch_size
+
+        Returns:
+            batch_size, student_num_heads, student_patch_size, student_patch_size
+        '''
+        if self.apply_pool:
+            x_max = self.max_pool(x)  # ..................| bs, nh, std_ps + 7 - 1, std_ps + 7 - 1
+            x_avg = self.avg_pool(x) 
+            x = torch.cat([x_max, x_avg], dim=1)  # ......| bs, nh * 2, std_ps + 7 - 1, std_ps + 7 - 1
+            return torch.sigmoid(self.last_conv(x))  # ...| bs, std_nh, std_ps, std_ps
+        else:
+            return torch.sigmoid(self.last_conv(x))  # ...| bs, std_nh, std_ps, std_ps   
+
+
 DINOV2_DIMS = {
     'dinov2_vits14': 384,
     'dinov2_vitb14': 768,
@@ -91,7 +125,7 @@ class DistillationModel(pl.LightningModule):
         self.student_config = {
             **student_config,
             'model_name': student_arch,
-            'num_trainable_blocks': self.backbone_config['num_trainable_blocks'][-1:],
+            # 'num_trainable_blocks': self.backbone_config['num_trainable_blocks'][-1:],
             'masking_ratio': 0,
         }
         
@@ -132,7 +166,9 @@ class DistillationModel(pl.LightningModule):
         
         backbone_num_heads = DINOV2_N_HEADS[self.encoder_arch]
         student_num_heads = DINOV2_N_HEADS[self.student_arch]
-        self.attn_align_fn = nn.Conv2d(backbone_num_heads, student_num_heads, kernel_size=1)
+        self.attn_align_fn = nn.ModuleList(CBAM(input_patch=p+1, input_dim=DINOV2_N_HEADS[self.encoder_arch], \
+            output_patch=self.backbone.keep_patch_list[-1]+1, output_dim=DINOV2_N_HEADS[self.student_arch]) for p in self.backbone.keep_patch_list)
+
         self.student.align_fn = nn.Linear(DINOV2_DIMS[self.student_arch], DINOV2_DIMS[self.encoder_arch])
         
         self.backbone.load_state_dict(backbone_state_dict)
@@ -146,8 +182,10 @@ class DistillationModel(pl.LightningModule):
         if self.training:
             with torch.no_grad():
                 t_t, t_f, t_attn = self.backbone.eval()(x, role='teacher', mode='distill')
+                aligned_t_attn = torch.stack([self.attn_align_fn[i](t_) for i, t_ in enumerate(t_attn)])
             s_t, s_f, s_attn = self.student(self.resize_fn(x), role='student', mode='distill')
-            return self.student_aggregator((s_f, s_t)), self.teacher_aggregator((t_f, t_t)), s_attn, self.attn_align_fn(t_attn)
+            
+            return self.student_aggregator((s_f, s_t)), self.teacher_aggregator((t_f, t_t)), torch.stack(s_attn), aligned_t_attn
         else:
             p_t, p_f, _ = self.student(self.resize_fn(x), role='student', mode='distill')
             return self.student_aggregator((p_f, p_t))
@@ -233,12 +271,12 @@ class DistillationModel(pl.LightningModule):
             self.log('b_acc', sum(self.batch_acc) /
                     len(self.batch_acc), prog_bar=True, logger=True)
             
-        dist_desc_loss = (1 - F.cosine_similarity(s_desc, t_desc, dim=-1).mean())
+        # dist_desc_loss = (1 - F.cosine_similarity(s_desc, t_desc, dim=-1).mean())
         # dist_desc_loss = nn.functional.mse_loss(s_desc, t_desc)
         dist_attn_loss = nn.functional.mse_loss(s_attn, t_attn)
 
-        loss = loss + dist_desc_loss + dist_attn_loss
-        return loss, dist_desc_loss, dist_attn_loss
+        loss = loss + dist_attn_loss
+        return loss, dist_attn_loss
     
     # This is the training step that's executed at each iteration
     def training_step(self, batch, batch_idx):
@@ -265,9 +303,9 @@ class DistillationModel(pl.LightningModule):
             raise ValueError('NaNs in descriptors (teacher descriptor)')
 
         # Call the loss_function we defined above
-        loss, dist_desc_loss, dist_attn_loss = self.loss_function(s_desc, t_desc, labels, s_attn, t_attn, log_accuracy=True) 
+        loss, dist_attn_loss = self.loss_function(s_desc, t_desc, labels, s_attn, t_attn, log_accuracy=True) 
         self.log('loss', loss.item(), logger=True, prog_bar=True)
-        self.log('dist_desc_loss', dist_desc_loss.item(), logger=False, prog_bar=True)
+        # self.log('dist_desc_loss', dist_desc_loss.item(), logger=False, prog_bar=True)
         self.log('dist_attn_loss', dist_attn_loss.item(), logger=False, prog_bar=True)
         return {'loss': loss}
     

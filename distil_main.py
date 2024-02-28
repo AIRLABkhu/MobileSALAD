@@ -61,6 +61,7 @@ if __name__ == '__main__':
         student_config={
             'model_name': student_arch,
             'img_size': 154, 
+            'num_trainable_blocks' : [8,9,10]
         },
         
         lr = args.lr,

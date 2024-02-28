@@ -62,7 +62,7 @@ class Dyn_DINOv2(nn.Module):
             self,
             model_name='dinov2_vitb14',
             img_size: int=224,
-            num_trainable_blocks: list=[3, 6, 9],
+            num_trainable_blocks: list=[8,9,10],
             norm_layer=False,
             return_token=False,
             masking_ratio: float= 0.2,
@@ -99,7 +99,7 @@ class Dyn_DINOv2(nn.Module):
         x = self.model.prepare_tokens_with_masks(x)
         B, NP, DIM = x.shape # NP means number of patch include token ( 256 + 1 )
         
-        attn = None
+        attn_list = []
         out_pred_prob = []
         prev_decision = torch.ones(B, NP-1, 1, dtype=x.dtype, device=x.device)
         policy = torch.ones(B, NP, 1, dtype=x.dtype, device=x.device)
@@ -135,11 +135,13 @@ class Dyn_DINOv2(nn.Module):
                         x = batch_index_select(x, now_policy)
                         prev_decision = batch_index_select(prev_decision, keep_policy)
                         x, attn = blk(x, return_attention=True)
+                        attn_list.append(attn)
 
         
             elif role=='student':
                 if  i in self.num_trainable_blocks:
                     x, attn = blk(x, return_attention=True)
+                    attn_list.append(attn)
                 else:
                     x = blk(x, return_attention=False)
                 
@@ -158,12 +160,12 @@ class Dyn_DINOv2(nn.Module):
             
         if not self.training:
             if mode == 'distill':
-                return t, f, attn
+                return t, f, attn_list
             else:
                 return t, f
         elif mode == 'pruning':
             return t, f, prev_decision.detach(), out_pred_prob
         elif mode == 'distill':
-            return t, f, attn
+            return t, f, attn_list
         else:
             raise NameError
