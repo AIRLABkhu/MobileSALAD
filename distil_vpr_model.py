@@ -10,6 +10,7 @@ from torch.nn.parameter import Parameter
 import torch.nn.functional as F
 from torch.optim import lr_scheduler, optimizer
 from torchvision import transforms
+from torchvision.transforms import Resize, InterpolationMode
 
 import utils
 from models import helper
@@ -46,7 +47,113 @@ class CBAM(nn.Module):
             x = torch.cat([x_max, x_avg], dim=1)  # ......| bs, nh * 2, std_ps + 7 - 1, std_ps + 7 - 1
             return torch.sigmoid(self.last_conv(x))  # ...| bs, std_nh, std_ps, std_ps
         else:
-            return torch.sigmoid(self.last_conv(x))  # ...| bs, std_nh, std_ps, std_ps   
+            return torch.sigmoid(self.last_conv(x))  # ...| bs, std_nh, std_ps, std_ps  
+        
+def mapping_index(idx_list):
+    """_summary_
+
+    Args:
+        idx_list (list) : 3 torch.Tensor.
+            idx_list[0] : first pruning 256 to 203
+            idx_list[1] : second pruning 203 to 161
+            idx_list[2] : final purning 161 to 121
+            
+    Outputs:
+        re_mapping_mid (torch.Tensor) : mapped index 162 to 256
+        re_mapping_final (torch.Tensor) : mapped index 121 to 256
+    """
+    target_idx = idx_list[0]
+    mid_idx = idx_list[1]
+    final_idx = idx_list[2]
+    
+    def mapping_(source, target):
+        B, NP = source.size()
+        mapping_tensor = torch.zeros_like(source, device=source.device)
+        for b in range(B):
+            sorted_target = sorted(target[b])
+            for i, index in enumerate(sorted(source[b])):
+                mapping_tensor[b][i] = sorted_target[index]
+        return mapping_tensor
+    
+    def re_mapping_(mapping_, source_index):
+        B, NP = source_index.size()
+        re_mapping_tensor = torch.zeros_like(source_index, device=source_index.device)
+        for b in range(B):
+            for i, index in enumerate(source_index[b]):
+                re_mapping_tensor[b][i] = mapping_[b][index]
+        return re_mapping_tensor
+    
+    B, NP = target_idx.size()   
+    for b in range(B):
+        value, _ = torch.sort(target_idx[b])
+        target_idx[b] = value  
+    # target_mapping_ = sorted(target_idx)
+    mid_mapping_ = mapping_(mid_idx, target_idx)
+    
+    re_mapping_final = re_mapping_(mid_mapping_, final_idx)
+    re_mapping_mid = re_mapping_(target_idx, mid_idx)
+            
+    return [idx_list[0], re_mapping_mid, re_mapping_final]
+
+def get_spatial_feature(mapped_idx_list, prob_list, x_list):
+    """_summary_
+
+    Args:
+        mapped_idx_list (list): 
+            __len__() : 3
+        prob_list (list): 
+            __len__() : 3
+        x_list (_type_): 
+            __len__() : 3
+
+    Returns:
+        spatial_feature_list (list): 
+            __len__(3)
+    """
+    spatial_feature_list = []
+    token_list = []
+    for idx, prob, x in zip(mapped_idx_list, prob_list, x_list):
+        B, NP= idx.shape
+        _, _, D = x.shape
+        t = x[:, 0]
+        f = x[:, 1:]
+        empty_tensor = torch.zeros(B, 256, D).to(device=x.device)
+        expanded_idx = idx.unsqueeze(-1).expand(B, NP, D)
+        expanded_prob = prob.unsqueeze(-1).expand(B, NP, D)
+
+        empty_tensor.scatter_(1, expanded_idx, expanded_prob * f)
+        spatial_feature_list.append(empty_tensor)
+        token_list.append(t)
+        
+    return spatial_feature_list, token_list
+
+def interpolate_feature(patial_feature_list, intporlate_size):
+    resize_fn = Resize(size=(intporlate_size, intporlate_size), interpolation=InterpolationMode.BILINEAR, antialias=False)
+    brod_len = [len(b) for b in patial_feature_list]
+    brod_all = torch.cat(patial_feature_list, dim=0)
+    brod_2d = brod_all.reshape(-1, 16, 16, 768).permute(0, 3, 1, 2)
+    brod_2d_interp = resize_fn(brod_2d)
+    brod_1d_interp = brod_2d_interp.permute(0, 2, 3, 1).flatten(1, 2)
+    brod_interp = brod_2d_interp.split_with_sizes(brod_len, dim=0)
+    return [b for b in brod_interp]
+        
+        
+def get_spatial_feture_list(keeping_zip, interpolate_size=None):
+    idx_list, prob_list, feature_list = zip(*keeping_zip)
+    mapped_idx_list = mapping_index(idx_list)
+    spatial_feature_list, token_list = get_spatial_feature(mapped_idx_list, prob_list, feature_list)
+    if interpolate_size is not None:
+        spatial_feature_list = interpolate_feature(spatial_feature_list, interpolate_size)
+    # return torch.stack(token_list, dim=1), torch.stack(spatial_feature_list, dim=1)
+    
+    # output_list = []
+    # for i in range(len(spatial_feature_list)):
+    #     print(spatial_feature_list[i].shape)
+    #     print(token_list[i].unsqueeze(1).shape)
+    #     output_tensor = torch.cat((token_list[i].unsqueeze(-1).unsqueeze(-1), spatial_feature_list[i]), dim=1)
+    #     output_list.append(output_tensor)
+    
+    return token_list, spatial_feature_list
 
 
 DINOV2_DIMS = {
@@ -166,8 +273,10 @@ class DistillationModel(pl.LightningModule):
         
         backbone_num_heads = DINOV2_N_HEADS[self.encoder_arch]
         student_num_heads = DINOV2_N_HEADS[self.student_arch]
-        self.attn_align_fn = nn.ModuleList(CBAM(input_patch=p+1, input_dim=DINOV2_N_HEADS[self.encoder_arch], \
-            output_patch=self.backbone.keep_patch_list[-1]+1, output_dim=DINOV2_N_HEADS[self.student_arch]) for p in self.backbone.keep_patch_list)
+        # self.attn_align_fn = nn.ModuleList(CBAM(input_patch=p+1, input_dim=DINOV2_N_HEADS[self.encoder_arch], \
+        #     output_patch=self.backbone.keep_patch_list[-1]+1, output_dim=DINOV2_N_HEADS[self.student_arch]) for p in self.backbone.keep_patch_list)
+        
+        self.feature_align_fn = nn.ModuleList(nn.Conv2d(DINOV2_DIMS[self.encoder_arch], DINOV2_DIMS[self.student_arch], kernel_size=(1,1)) for _ in self.backbone.keep_patch_list)
 
         self.student.align_fn = nn.Linear(DINOV2_DIMS[self.student_arch], DINOV2_DIMS[self.encoder_arch])
         
@@ -181,19 +290,31 @@ class DistillationModel(pl.LightningModule):
     def forward(self, x):
         if self.training:
             with torch.no_grad():
-                t_t, t_f, t_attn = self.backbone.eval()(x, role='teacher', mode='distill')
-                aligned_t_attn = torch.stack([self.attn_align_fn[i](t_) for i, t_ in enumerate(t_attn)])
-            s_t, s_f, s_attn = self.student(self.resize_fn(x), role='student', mode='distill')
+                t_t, t_f, out_pred_prob, keep_zip = self.backbone.eval()(x, role='teacher', mode='distill')
+            # aligned_t_attn = torch.stack([self.attn_align_fn[i](t_) for i, t_ in enumerate(t_attn)])
+            # weighted_t_f = weighted(t_t, t_f, out_pred_prob, keep_zip)
+            distill_t_token, distill_t_feature = get_spatial_feture_list(keep_zip, interpolate_size=self.student.keep_patches)
+
+            s_t, s_f, s_f_zip = self.student(self.resize_fn(x), role='student', mode='distill')
+            distill_t_feature = torch.stack([self.feature_align_fn[i](f_).flatten(-2, -1) for i, f_ in enumerate(distill_t_feature)], dim=1)
+            distill_t_token = torch.stack([self.feature_align_fn[i](t_.unsqueeze(-1).unsqueeze(-1)).flatten(-2, -1) for i, t_ in enumerate(distill_t_token)], dim=1)
+            distill_t = torch.cat((distill_t_token, distill_t_feature), dim=-1).permute(0, 1, 3, 2)
+            # print(distill_t.shape) # torch.Size([64, 3, 384, 122])
+            distill_s = torch.stack(s_f_zip, dim=1)
+            # torch.Size([64, 3, 384, 11, 11])
+            # torch.Size([64, 3, 384, 1, 1])
+            # print(distill_t.shape)
+            # print(distill_s.shape)
             
-            return self.student_aggregator((s_f, s_t)), self.teacher_aggregator((t_f, t_t)), torch.stack(s_attn), aligned_t_attn
+            return self.student_aggregator((s_f, s_t)), self.teacher_aggregator((t_f, t_t)), distill_s, distill_t
         else:
-            p_t, p_f, _ = self.student(self.resize_fn(x), role='student', mode='distill')
+            p_t, p_f = self.student(self.resize_fn(x), role='student', mode='distill')
             return self.student_aggregator((p_f, p_t))
 
     @utils.yield_as(list)
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
         yield from self.student.parameters(recurse=recurse)
-        yield from self.attn_align_fn.parameters(recurse=recurse)
+        yield from self.feature_align_fn.parameters(recurse=recurse)
         yield from self.student_aggregator.parameters(recurse=recurse)
     
     # configure the optimizer 
@@ -241,7 +362,7 @@ class DistillationModel(pl.LightningModule):
         self.lr_schedulers().step()
         
     #  The loss function call (this method will be called at each training iteration)
-    def loss_function(self, s_desc, t_desc, labels, s_attn, t_attn, log_accuracy: bool=False):
+    def loss_function(self, s_desc, t_desc, labels, distill_s, distill_t, log_accuracy: bool=False):
         ## This part is same as pruning part.
         # we mine the pairs/triplets if there is an online mining strategy
         if self.miner is not None:
@@ -272,11 +393,10 @@ class DistillationModel(pl.LightningModule):
                     len(self.batch_acc), prog_bar=True, logger=True)
             
         # dist_desc_loss = (1 - F.cosine_similarity(s_desc, t_desc, dim=-1).mean())
-        # dist_desc_loss = nn.functional.mse_loss(s_desc, t_desc)
-        dist_attn_loss = nn.functional.mse_loss(s_attn, t_attn)
+        distill_loss = nn.functional.mse_loss(distill_s, distill_t)
 
-        loss = loss + dist_attn_loss
-        return loss, dist_attn_loss
+        loss = loss + distill_loss
+        return loss, distill_loss
     
     # This is the training step that's executed at each iteration
     def training_step(self, batch, batch_idx):
@@ -295,7 +415,7 @@ class DistillationModel(pl.LightningModule):
         # Feed forward the ba6tch to the model
         # Here we are calling the method forward that we defined above
 
-        s_desc, t_desc, s_attn, t_attn = self(images)
+        s_desc, t_desc, distill_s, distill_t = self(images)
 
         if torch.isnan(s_desc).any():
             raise ValueError('NaNs in descriptors (student descriptor)')
@@ -303,10 +423,9 @@ class DistillationModel(pl.LightningModule):
             raise ValueError('NaNs in descriptors (teacher descriptor)')
 
         # Call the loss_function we defined above
-        loss, dist_attn_loss = self.loss_function(s_desc, t_desc, labels, s_attn, t_attn, log_accuracy=True) 
+        loss, distill_loss = self.loss_function(s_desc, t_desc, labels, distill_s, distill_t, log_accuracy=True) 
         self.log('loss', loss.item(), logger=True, prog_bar=True)
-        # self.log('dist_desc_loss', dist_desc_loss.item(), logger=False, prog_bar=True)
-        self.log('dist_attn_loss', dist_attn_loss.item(), logger=False, prog_bar=True)
+        self.log('distill_loss', distill_loss.item(), logger=False, prog_bar=True)
         return {'loss': loss}
     
     def on_train_epoch_end(self):

@@ -99,9 +99,10 @@ class Dyn_DINOv2(nn.Module):
         x = self.model.prepare_tokens_with_masks(x)
         B, NP, DIM = x.shape # NP means number of patch include token ( 256 + 1 )
         
-        attn_list = []
         out_pred_prob = []
+        keep_zip = []
         prev_decision = torch.ones(B, NP-1, 1, dtype=x.dtype, device=x.device)
+
         policy = torch.ones(B, NP, 1, dtype=x.dtype, device=x.device)
         for i, blk in enumerate(self.model.blocks):
             if role == 'teacher':
@@ -123,27 +124,46 @@ class Dyn_DINOv2(nn.Module):
                         out_pred_prob.append(hard_keep_decision.reshape(B, NP-1))
                         token_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
                         policy = torch.cat([token_policy, hard_keep_decision], dim=1)
-                        x, attn = blk(x, policy=policy, return_attention=True)
+                        x = blk(x, policy=policy, return_attention=False)
                         prev_decision = hard_keep_decision
                         
                     else:
-                        score = pred_score[:,:,0]
-                        num_keep_node = self.keep_patch_list[idx]
-                        keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
-                        token_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
-                        now_policy = torch.cat([token_policy, keep_policy + 1], dim=1)
-                        x = batch_index_select(x, now_policy)
-                        prev_decision = batch_index_select(prev_decision, keep_policy)
-                        x, attn = blk(x, return_attention=True)
-                        attn_list.append(attn)
-
-        
+                        if mode == 'pruning':
+                            score = pred_score[:,:,0]
+                            num_keep_node = self.keep_patch_list[idx]
+                            keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
+                            token_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
+                            now_policy = torch.cat([token_policy, keep_policy + 1], dim=1)
+                            x = batch_index_select(x, now_policy)
+                            prev_decision = batch_index_select(prev_decision, keep_policy)
+                            x = blk(x, return_attention=False)
+                            
+                        elif mode == 'distill':
+                            score = pred_score[:,:,0]
+                            num_keep_node = self.keep_patch_list[idx]
+                            
+                            keeping_patch = torch.zeros_like(score, dtype=x.dtype, device=x.device)
+                            keep_prob, keep_idx  = torch.sort(score, dim=1, descending=True)
+                            keep_prob = keep_prob[:,:num_keep_node]
+                            keep_idx = keep_idx[:,:num_keep_node]
+                            
+                            keeping_patch.scatter_(1, keep_idx, 1)
+                            out_pred_prob.append(keeping_patch)
+                            
+                            keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
+                            token_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
+                            now_policy = torch.cat([token_policy, keep_policy + 1], dim=1)
+                            x = batch_index_select(x, now_policy)
+                            prev_decision = batch_index_select(prev_decision, keep_policy)
+                            x = blk(x, return_attention=False)
+                            
+                            keep_zip.append((keep_idx, keep_prob, x))
+                        
+                            
             elif role=='student':
-                if  i in self.num_trainable_blocks:
-                    x, attn = blk(x, return_attention=True)
-                    attn_list.append(attn)
-                else:
-                    x = blk(x, return_attention=False)
+                x = blk(x, return_attention=False)
+                if i in self.num_trainable_blocks:
+                    keep_zip.append(x)
                 
         if self.norm_layer:
             x = self.model.norm(x)
@@ -157,15 +177,22 @@ class Dyn_DINOv2(nn.Module):
             f = f.reshape((B, patches_row, patches_row, -1)).permute(0, 3, 1, 2)
         else:
             f = f.reshape((B, self.keep_patches, self.keep_patches, -1)).permute(0, 3, 1, 2)
+        
+        if role == 'teacher':
+            return t, f, out_pred_prob, keep_zip
+        elif role == 'student':
+            return t, f, keep_zip
             
-        if not self.training:
-            if mode == 'distill':
-                return t, f, attn_list
-            else:
-                return t, f
-        elif mode == 'pruning':
-            return t, f, prev_decision.detach(), out_pred_prob
-        elif mode == 'distill':
-            return t, f, attn_list
+        # else:
+                                
+        # if not self.training:
+        #     if mode == 'distill':
+        #         return t, f, attn_list
+        #     else:
+        #         return t, f
+        # elif mode == 'pruning':
+        #     return t, f, prev_decision.detach(), out_pred_prob
+        # elif mode == 'distill':
+        #     return t, f, attn_list
         else:
             raise NameError
