@@ -66,34 +66,16 @@ def mapping_index(idx_list):
     mid_idx = idx_list[1]
     final_idx = idx_list[2]
     
-    def mapping_(source, target):
-        B, NP = source.size()
-        mapping_tensor = torch.zeros_like(source, device=source.device)
-        for b in range(B):
-            sorted_target = sorted(target[b])
-            for i, index in enumerate(sorted(source[b])):
-                mapping_tensor[b][i] = sorted_target[index]
-        return mapping_tensor
+    # Sort target index and cache sorted indices
+    sorted_target_idx = torch.sort(target_idx, dim=1)[0]
     
-    def re_mapping_(mapping_, source_index):
-        B, NP = source_index.size()
-        re_mapping_tensor = torch.zeros_like(source_index, device=source_index.device)
-        for b in range(B):
-            for i, index in enumerate(source_index[b]):
-                re_mapping_tensor[b][i] = mapping_[b][index]
-        return re_mapping_tensor
+    # Create mapping for mid index
+    mid_mapping = sorted_target_idx.gather(dim=1, index=mid_idx)
     
-    B, NP = target_idx.size()   
-    for b in range(B):
-        value, _ = torch.sort(target_idx[b])
-        target_idx[b] = value  
-    # target_mapping_ = sorted(target_idx)
-    mid_mapping_ = mapping_(mid_idx, target_idx)
+    # Create mapping for final index
+    final_mapping = mid_mapping.gather(dim=1, index=final_idx)
     
-    re_mapping_final = re_mapping_(mid_mapping_, final_idx)
-    re_mapping_mid = re_mapping_(target_idx, mid_idx)
-            
-    return [idx_list[0], re_mapping_mid, re_mapping_final]
+    return [idx_list[0], mid_mapping, final_mapping]
 
 def get_spatial_feature(mapped_idx_list, prob_list, x_list):
     """_summary_
@@ -296,6 +278,7 @@ class DistillationModel(pl.LightningModule):
             distill_t_token, distill_t_feature = get_spatial_feture_list(keep_zip, interpolate_size=self.student.keep_patches)
 
             s_t, s_f, s_f_zip = self.student(self.resize_fn(x), role='student', mode='distill')
+            
             distill_t_feature = torch.stack([self.feature_align_fn[i](f_).flatten(-2, -1) for i, f_ in enumerate(distill_t_feature)], dim=1)
             distill_t_token = torch.stack([self.feature_align_fn[i](t_.unsqueeze(-1).unsqueeze(-1)).flatten(-2, -1) for i, t_ in enumerate(distill_t_token)], dim=1)
             distill_t = torch.cat((distill_t_token, distill_t_feature), dim=-1).permute(0, 1, 3, 2)
@@ -308,7 +291,7 @@ class DistillationModel(pl.LightningModule):
             
             return self.student_aggregator((s_f, s_t)), self.teacher_aggregator((t_f, t_t)), distill_s, distill_t
         else:
-            p_t, p_f = self.student(self.resize_fn(x), role='student', mode='distill')
+            p_t, p_f, _ = self.student(self.resize_fn(x), role='student', mode='distill')
             return self.student_aggregator((p_f, p_t))
 
     @utils.yield_as(list)
