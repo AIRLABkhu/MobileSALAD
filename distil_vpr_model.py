@@ -191,7 +191,8 @@ class DistillationModel(pl.LightningModule):
         miner_name='MultiSimilarityMiner', 
         miner_margin=0.1,
         faiss_gpu=False,
-        faiss_device=0
+        faiss_device=0,
+        distill_loss_rate=1,
     ):
         super().__init__()
         teacher_config = os.path.join(teacher_config, 'lightning_logs', 'version_0')
@@ -243,6 +244,7 @@ class DistillationModel(pl.LightningModule):
         self.criterion = torch.nn.L1Loss()
         self.faiss_gpu = faiss_gpu
         self.faiss_device = faiss_device
+        self.distill_loss_rate = distill_loss_rate
         
         # ----------------------------------
         # get the backbone and the aggregator
@@ -258,8 +260,9 @@ class DistillationModel(pl.LightningModule):
         # self.attn_align_fn = nn.ModuleList(CBAM(input_patch=p+1, input_dim=DINOV2_N_HEADS[self.encoder_arch], \
         #     output_patch=self.backbone.keep_patch_list[-1]+1, output_dim=DINOV2_N_HEADS[self.student_arch]) for p in self.backbone.keep_patch_list)
         
-        self.feature_align_fn = nn.ModuleList(nn.Conv2d(DINOV2_DIMS[self.encoder_arch], DINOV2_DIMS[self.student_arch], kernel_size=(1,1)) for _ in self.backbone.keep_patch_list)
-
+        # self.feature_align_fn = nn.ModuleList(nn.Conv2d(DINOV2_DIMS[self.encoder_arch], DINOV2_DIMS[self.student_arch], kernel_size=(1,1)) for _ in self.backbone.keep_patch_list)
+        self.feature_align_fn = nn.ModuleList(nn.Conv2d(DINOV2_DIMS[self.student_arch], DINOV2_DIMS[self.encoder_arch], kernel_size=(1,1)) for _ in self.backbone.keep_patch_list)
+        
         self.student.align_fn = nn.Linear(DINOV2_DIMS[self.student_arch], DINOV2_DIMS[self.encoder_arch])
         
         self.backbone.load_state_dict(backbone_state_dict)
@@ -276,20 +279,19 @@ class DistillationModel(pl.LightningModule):
             # aligned_t_attn = torch.stack([self.attn_align_fn[i](t_) for i, t_ in enumerate(t_attn)])
             # weighted_t_f = weighted(t_t, t_f, out_pred_prob, keep_zip)
             distill_t_token, distill_t_feature = get_spatial_feture_list(keep_zip, interpolate_size=self.student.keep_patches)
+            distill_t_feature = torch.stack(distill_t_feature, dim=1)
 
             s_t, s_f, s_f_zip = self.student(self.resize_fn(x), role='student', mode='distill')
+            distill_s_feature = torch.stack([self.feature_align_fn[i](s_[:, 1:].permute(0,2,1).reshape(-1, 384, 11, 11)) for i, s_ in enumerate(s_f_zip)], dim=1)
+            # distill_s = torch.stack(s_f_zip, dim=1)
             
-            distill_t_feature = torch.stack([self.feature_align_fn[i](f_).flatten(-2, -1) for i, f_ in enumerate(distill_t_feature)], dim=1)
-            distill_t_token = torch.stack([self.feature_align_fn[i](t_.unsqueeze(-1).unsqueeze(-1)).flatten(-2, -1) for i, t_ in enumerate(distill_t_token)], dim=1)
-            distill_t = torch.cat((distill_t_token, distill_t_feature), dim=-1).permute(0, 1, 3, 2)
+            # distill_t_feature = torch.stack([self.feature_align_fn[i](f_).flatten(-2, -1) for i, f_ in enumerate(distill_t_feature)], dim=1)
+            # distill_t_token = torch.stack([self.feature_align_fn[i](t_.unsqueeze(-1).unsqueeze(-1)).flatten(-2, -1) for i, t_ in enumerate(distill_t_token)], dim=1)
+            # distill_t = torch.cat((distill_t_token, distill_t_feature), dim=-1).permute(0, 1, 3, 2)
             # print(distill_t.shape) # torch.Size([64, 3, 384, 122])
-            distill_s = torch.stack(s_f_zip, dim=1)
-            # torch.Size([64, 3, 384, 11, 11])
-            # torch.Size([64, 3, 384, 1, 1])
-            # print(distill_t.shape)
-            # print(distill_s.shape)
+
             
-            return self.student_aggregator((s_f, s_t)), self.teacher_aggregator((t_f, t_t)), distill_s, distill_t
+            return self.student_aggregator((s_f, s_t)), self.teacher_aggregator((t_f, t_t)), distill_s_feature, distill_t_feature
         else:
             p_t, p_f, _ = self.student(self.resize_fn(x), role='student', mode='distill')
             return self.student_aggregator((p_f, p_t))
@@ -377,8 +379,9 @@ class DistillationModel(pl.LightningModule):
             
         # dist_desc_loss = (1 - F.cosine_similarity(s_desc, t_desc, dim=-1).mean())
         distill_loss = nn.functional.mse_loss(distill_s, distill_t)
+        distill_loss += nn.functional.mse_loss(s_desc, t_desc)
 
-        loss = loss + distill_loss
+        loss = loss + self.distill_loss_rate * distill_loss
         return loss, distill_loss
     
     # This is the training step that's executed at each iteration

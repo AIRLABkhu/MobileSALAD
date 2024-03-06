@@ -27,6 +27,8 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--check-val', type=int, default=1)
     parser.add_argument('--lr', type=float, default=4e-5)
+    
+    parser.add_argument('--distill_loss_rate', type=float, default=1)
 
     args = parser.parse_args()
     
@@ -82,7 +84,9 @@ if __name__ == '__main__':
         miner_name='MultiSimilarityMiner', # example: TripletMarginMiner, MultiSimilarityMiner, PairMarginMiner
         miner_margin=0.1,
         faiss_gpu=True,
-        faiss_device=args.device
+        faiss_device=args.device,
+        
+        distill_loss_rate=args.distill_loss_rate
     )
 
     # model params saving using Pytorch Lightning
