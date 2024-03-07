@@ -43,7 +43,7 @@ if __name__ == '__main__':
         shuffle_all=False, # shuffle all images or keep shuffling in-city only
         random_sample_from_each_place=True,
         image_size=(224, 224),
-        num_workers=2,
+        num_workers=8,
         pin_memory=True,
         show_data_stats=True,
         val_set_names=[

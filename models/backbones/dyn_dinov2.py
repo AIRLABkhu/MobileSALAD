@@ -95,7 +95,7 @@ class Dyn_DINOv2(nn.Module):
         self.selectors = nn.ModuleList([PredictorLG(embed_dim=self.num_channels) for _ in self.num_trainable_blocks])
         self.align_fn = nn.Identity()
 
-    def forward(self, x, role: Literal['student, teacher'], mode: Literal['pruning', 'distill']='pruning'):
+    def forward(self, x, role: Literal['student, teacher']='teacher', mode: Literal['pruning', 'distill']='pruning'):
         x = self.model.prepare_tokens_with_masks(x)
         B, NP, DIM = x.shape # NP means number of patch include token ( 256 + 1 )
         
@@ -126,7 +126,8 @@ class Dyn_DINOv2(nn.Module):
                         policy = torch.cat([token_policy, hard_keep_decision], dim=1)
                         x = blk(x, policy=policy, return_attention=False)
                         prev_decision = hard_keep_decision
-                        
+                    
+                    # Validation Step
                     else:
                         if mode == 'pruning':
                             score = pred_score[:,:,0]
@@ -157,7 +158,9 @@ class Dyn_DINOv2(nn.Module):
                             prev_decision = batch_index_select(prev_decision, keep_policy)
                             x = blk(x, return_attention=False)
                             
-                            keep_zip.append((keep_idx, keep_prob, x))
+                            keep_zip.append((keep_idx, keep_prob, x))         
+                else:
+                    x = blk(x, policy=policy, return_attention=False)   
                         
                             
             elif role=='student':
@@ -179,7 +182,10 @@ class Dyn_DINOv2(nn.Module):
             f = f.reshape((B, self.keep_patches, self.keep_patches, -1)).permute(0, 3, 1, 2)
         
         if role == 'teacher':
-            return t, f, out_pred_prob, keep_zip
+            if mode == 'distill':
+                return t, f, out_pred_prob, keep_zip
+            elif mode == 'pruning':
+                return t, f, prev_decision.detach(), out_pred_prob
         elif role == 'student':
             return t, f, keep_zip
             

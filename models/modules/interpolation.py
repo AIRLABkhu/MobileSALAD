@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from modules import NonzeroAvgPool2d, SpConvAdapter
+from models.modules import NonzeroAvgPool2d, SpConvAdapter
 
 
 class Interpolation2d(nn.Module):
@@ -60,7 +60,7 @@ class Interpolation2d(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.nonlin(self.conv(x))
         x = self.pool(x.permute(0, 3, 1, 2))
-        return x.permute(0, 2, 3, 1)
+        return x
     
     
 if __name__ == '__main__':

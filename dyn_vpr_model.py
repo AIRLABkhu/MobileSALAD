@@ -100,9 +100,9 @@ class VPRModel(pl.LightningModule):
             # s_out = self.aggregator((s_f, s_t))
             with torch.no_grad():
                 t_t, t_f = self.teacher(x)
-            return self.aggregator((s_f, s_t)), self.aggregator((t_f, t_t)), s_t, s_f, s_prev_decision, s_out_pred_prob
+            return self.aggregator((s_f, s_t)), self.aggregator((t_f, t_t)), s_prev_decision, s_out_pred_prob
         else:
-            p_t, p_f = self.backbone(x)
+            p_t, p_f, _, _ = self.backbone(x)
             return self.aggregator((p_f, p_t))
 
     @utils.yield_as(list)
@@ -218,7 +218,7 @@ class VPRModel(pl.LightningModule):
         # Feed forward the ba6tch to the model
         # Here we are calling the method forward that we defined above
 
-        s_desc, t_desc, _, _, s_prev_decision, s_out_pred_prob = self(images)
+        s_desc, t_desc, s_prev_decision, s_out_pred_prob = self(images)
 
         if torch.isnan(s_desc).any():
             raise ValueError('NaNs in descriptors (student descriptor)')

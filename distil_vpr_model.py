@@ -14,6 +14,7 @@ from torchvision.transforms import Resize, InterpolationMode
 
 import utils
 from models import helper
+from models.modules import Interpolation2d
 
 
 class CBAM(nn.Module):
@@ -109,32 +110,12 @@ def get_spatial_feature(mapped_idx_list, prob_list, x_list):
         
     return spatial_feature_list, token_list
 
-def interpolate_feature(patial_feature_list, intporlate_size):
-    resize_fn = Resize(size=(intporlate_size, intporlate_size), interpolation=InterpolationMode.BILINEAR, antialias=False)
-    brod_len = [len(b) for b in patial_feature_list]
-    brod_all = torch.cat(patial_feature_list, dim=0)
-    brod_2d = brod_all.reshape(-1, 16, 16, 768).permute(0, 3, 1, 2)
-    brod_2d_interp = resize_fn(brod_2d)
-    brod_1d_interp = brod_2d_interp.permute(0, 2, 3, 1).flatten(1, 2)
-    brod_interp = brod_2d_interp.split_with_sizes(brod_len, dim=0)
-    return [b for b in brod_interp]
-        
-        
-def get_spatial_feture_list(keeping_zip, interpolate_size=None):
+
+def get_spatial_feture_list(keeping_zip):
     idx_list, prob_list, feature_list = zip(*keeping_zip)
     mapped_idx_list = mapping_index(idx_list)
     spatial_feature_list, token_list = get_spatial_feature(mapped_idx_list, prob_list, feature_list)
-    if interpolate_size is not None:
-        spatial_feature_list = interpolate_feature(spatial_feature_list, interpolate_size)
-    # return torch.stack(token_list, dim=1), torch.stack(spatial_feature_list, dim=1)
-    
-    # output_list = []
-    # for i in range(len(spatial_feature_list)):
-    #     print(spatial_feature_list[i].shape)
-    #     print(token_list[i].unsqueeze(1).shape)
-    #     output_tensor = torch.cat((token_list[i].unsqueeze(-1).unsqueeze(-1), spatial_feature_list[i]), dim=1)
-    #     output_list.append(output_tensor)
-    
+
     return token_list, spatial_feature_list
 
 
@@ -261,7 +242,8 @@ class DistillationModel(pl.LightningModule):
         #     output_patch=self.backbone.keep_patch_list[-1]+1, output_dim=DINOV2_N_HEADS[self.student_arch]) for p in self.backbone.keep_patch_list)
         
         # self.feature_align_fn = nn.ModuleList(nn.Conv2d(DINOV2_DIMS[self.encoder_arch], DINOV2_DIMS[self.student_arch], kernel_size=(1,1)) for _ in self.backbone.keep_patch_list)
-        self.feature_align_fn = nn.ModuleList(nn.Conv2d(DINOV2_DIMS[self.student_arch], DINOV2_DIMS[self.encoder_arch], kernel_size=(1,1)) for _ in self.backbone.keep_patch_list)
+        self.feature_interpolate_fn = Interpolation2d(in_dim=768, out_dim=576, conv_kernel_size=3, pool_kernel_size=6, nonlinearity=nn.GELU)
+        self.feature_align_fn = nn.ModuleList(nn.Conv2d(DINOV2_DIMS[self.student_arch], 576, kernel_size=(1,1)) for _ in self.backbone.keep_patch_list)
         
         self.student.align_fn = nn.Linear(DINOV2_DIMS[self.student_arch], DINOV2_DIMS[self.encoder_arch])
         
@@ -276,22 +258,12 @@ class DistillationModel(pl.LightningModule):
         if self.training:
             with torch.no_grad():
                 t_t, t_f, out_pred_prob, keep_zip = self.backbone.eval()(x, role='teacher', mode='distill')
-            # aligned_t_attn = torch.stack([self.attn_align_fn[i](t_) for i, t_ in enumerate(t_attn)])
-            # weighted_t_f = weighted(t_t, t_f, out_pred_prob, keep_zip)
-            distill_t_token, distill_t_feature = get_spatial_feture_list(keep_zip, interpolate_size=self.student.keep_patches)
-            distill_t_feature = torch.stack(distill_t_feature, dim=1)
-
+            distill_t_token, distill_t_feature = get_spatial_feture_list(keep_zip)
+            interpolated_t_feature = [self.feature_interpolate_fn(feature.reshape(-1, 16, 16, 768))for feature in distill_t_feature]
+            interpolated_t_feature = torch.cat(interpolated_t_feature, dim=0)
             s_t, s_f, s_f_zip = self.student(self.resize_fn(x), role='student', mode='distill')
-            distill_s_feature = torch.stack([self.feature_align_fn[i](s_[:, 1:].permute(0,2,1).reshape(-1, 384, 11, 11)) for i, s_ in enumerate(s_f_zip)], dim=1)
-            # distill_s = torch.stack(s_f_zip, dim=1)
-            
-            # distill_t_feature = torch.stack([self.feature_align_fn[i](f_).flatten(-2, -1) for i, f_ in enumerate(distill_t_feature)], dim=1)
-            # distill_t_token = torch.stack([self.feature_align_fn[i](t_.unsqueeze(-1).unsqueeze(-1)).flatten(-2, -1) for i, t_ in enumerate(distill_t_token)], dim=1)
-            # distill_t = torch.cat((distill_t_token, distill_t_feature), dim=-1).permute(0, 1, 3, 2)
-            # print(distill_t.shape) # torch.Size([64, 3, 384, 122])
-
-            
-            return self.student_aggregator((s_f, s_t)), self.teacher_aggregator((t_f, t_t)), distill_s_feature, distill_t_feature
+            distill_s_feature = torch.cat([self.feature_align_fn[i](s_[:, 1:].permute(0,2,1).reshape(-1, 384, 11, 11)) for i, s_ in enumerate(s_f_zip)], dim=0)
+            return self.student_aggregator((s_f, s_t)), self.teacher_aggregator((t_f, t_t)), distill_s_feature, interpolated_t_feature
         else:
             p_t, p_f, _ = self.student(self.resize_fn(x), role='student', mode='distill')
             return self.student_aggregator((p_f, p_t))
@@ -300,6 +272,7 @@ class DistillationModel(pl.LightningModule):
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
         yield from self.student.parameters(recurse=recurse)
         yield from self.feature_align_fn.parameters(recurse=recurse)
+        yield from self.feature_interpolate_fn.parameters(recurse=recurse)
         yield from self.student_aggregator.parameters(recurse=recurse)
     
     # configure the optimizer 
