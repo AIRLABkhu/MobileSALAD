@@ -1,0 +1,31 @@
+< dyn_dino 수정 버전>
+dev/yy
+
+
+< distillation 수정 버전>
+distll/yy
+
+
+< 원본 브랜치 >
+main
+MobileSALAD
++ * dinov2 (distill/yy) 
++ dataloaders
+    - * GSVCitiesDataloader.py (distill/yy)
++ models
+    + backbones 
+        - * dyn_dinov2.py (distill/yy)
+    + * modules (distill/yy)
+    - * helper.py (dev/yy)
++ utils
+    - * batch_index_select.py (distill/yy)
+    - * gumbel_softmax.py (distill/yy)
+    - * validation.py
++ * tools (distill/yy)
+
+- distill_main.py (distill/yy) # dyn_mian에서 load_pre_checkpoint 가져오기
+- distill_vpr_model.py (distill/yy)
+- dyn_main.py (dev/yy)
+- dyn_vpr_model.py (distill/yy)
+
+python dyn_main.py --masking-ratio 0.206 --epochs 10 --check-val 1 --lr 4e-5 --prun-loc 5 6 7 --tag diff_trans/re_mid_0.206_lr_4e-05_02 --device 5 --load-pre

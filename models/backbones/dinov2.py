@@ -72,7 +72,7 @@ class DINOv2(nn.Module):
         f = f.reshape((B, H // 14, W // 14, self.num_channels)).permute(0, 3, 1, 2)
 
         if self.return_token:
-            return f, t
+            return t, f
         return f
 
 
