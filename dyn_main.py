@@ -1,4 +1,5 @@
 import torch
+from typing import OrderedDict
 
 import pytorch_lightning as pl
 import pytorch_lightning.callbacks as pl_callbacks
@@ -17,6 +18,34 @@ DINOV2_ARCHS = {
     'dinov2_vitg14': 1536,
 }
 
+def load_pre_checkpoint(dir_path='weights/dino_salad.ckpt'):
+    pre_dict = torch.load(dir_path, map_location='cpu')
+    model_dict = model.state_dict()
+    # 킹갓제너럴코딩천재 근혁좌.
+    new_dict = OrderedDict({
+        **pre_dict,
+        **{
+            f'teacher.{key.replace("backbone.", "")}': val 
+            for key, val in pre_dict.items() 
+            if 'backbone.' in key
+        },
+    })
+
+    for i, selector in enumerate(model.backbone.selectors):
+        # dynamic vit selector
+        for k, in_selector in enumerate(selector.in_conv):
+            if 'weight' not in dir(in_selector):
+                continue
+            new_dict[f'backbone.selectors.{i}.in_conv.{k}.weight'] = in_selector.weight.data.cpu()
+            new_dict[f'backbone.selectors.{i}.in_conv.{k}.bias'] = in_selector.bias.data.cpu()
+        for k, out_selector in enumerate(selector.out_conv):
+            if 'weight' not in dir(out_selector):
+                continue
+            new_dict[f'backbone.selectors.{i}.out_conv.{k}.weight'] = out_selector.weight.data.cpu()
+            new_dict[f'backbone.selectors.{i}.out_conv.{k}.bias'] = out_selector.bias.data.cpu()
+
+    return new_dict
+
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium')
     # torch.set_float32_matmul_precision('high')
@@ -31,6 +60,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--masking-ratio', type=float, default=0.2)
     parser.add_argument('--prun-loc', type=int, nargs='+', default=[8,9,10])
+
+    parser.add_argument('--load-pre', action='store_true')
 
     # parser.add_argument('--trainable_blocks', default=)
 
@@ -51,7 +82,7 @@ if __name__ == '__main__':
             # 'pitts30k_test', 
             'pitts250k_val', 
             'pitts250k_test', 
-            # 'nordland', 
+            'nordland', 
             # 'sped', 
             'msls_val', 
         ], 
@@ -105,6 +136,11 @@ if __name__ == '__main__':
         faiss_device=args.device
     )
 
+    if args.load_pre:
+        model_dict = model.state_dict()
+        new_dict = load_pre_checkpoint()
+        model_dict.update(new_dict)
+        model.load_state_dict(model_dict, strict=False)
 
     # model params saving using Pytorch Lightning
     # we save the best 3 models accoring to Recall@1 on pittsburg val
@@ -135,4 +171,5 @@ if __name__ == '__main__':
 
     # we call the trainer, we give it the model and the datamodule
     trainer.fit(model=model, datamodule=datamodule)
+    # trainer.validation(model=model, datamodule=datamodule)
     # trainer.validate(model=model, datamodule=datamodule)

@@ -126,6 +126,8 @@ if __name__ == '__main__':
         #     state_dict[f'backbone.selectors.{i}.out_conv.{k}.weight'] = out_selector.weight.data.cpu()
         #     state_dict[f'backbone.selectors.{i}.out_conv.{k}.bias'] = out_selector.bias.data.cpu()
 
+    
+
 
     model.load_state_dict(state_dict)
 

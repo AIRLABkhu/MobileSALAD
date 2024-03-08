@@ -193,8 +193,6 @@ class VPRModel(pl.LightningModule):
         pred_loss = 0.0
         keep_ratio = self.backbone.ratio_list
         for i, score in enumerate(s_out_pred_prob):
-            print(f'{pos_ratio.shape=}')
-            print(f'{keep_ratio.shape=}')
             pos_ratio = score.mean(dim=1)
             pred_loss = pred_loss + ((pos_ratio - keep_ratio[i]) ** 2).mean()
 
