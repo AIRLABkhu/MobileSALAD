@@ -87,6 +87,7 @@ class VPRModel(pl.LightningModule):
         # get the backbone and the aggregator
         self.backbone = helper.get_backbone(backbone_arch, backbone_config)
         self.aggregator = helper.get_aggregator(agg_arch, agg_config)
+        # self.t_aggregator = helper.get_aggregator(agg_arch, agg_config)
         if self.teacher_arch is not None:
             self.teacher = helper.get_teacher(teacher_arch, teacher_config)
 
@@ -99,6 +100,7 @@ class VPRModel(pl.LightningModule):
             s_t, s_f, s_prev_decision, s_out_pred_prob = self.backbone(x)
             with torch.no_grad():
                 t_t, t_f = self.teacher(x)
+                # t_desc = self.t_aggregator((t_f, t_t))
 
             return self.aggregator((s_f, s_t)), self.aggregator((t_f, t_t)), s_prev_decision, s_out_pred_prob
         else:

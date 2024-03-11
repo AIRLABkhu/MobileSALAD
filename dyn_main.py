@@ -29,6 +29,11 @@ def load_pre_checkpoint(dir_path='weights/dino_salad.ckpt'):
             for key, val in pre_dict.items() 
             if 'backbone.' in key
         },
+        # **{
+        #     f'{key.replace("t_aggregator.", "")}': val 
+        #     for key, val in pre_dict.items() 
+        #     if 'aggregator.' in key
+        # },
     })
 
     for i, selector in enumerate(model.backbone.selectors):
