@@ -242,6 +242,7 @@ class DistillationModel(pl.LightningModule):
         #     output_patch=self.backbone.keep_patch_list[-1]+1, output_dim=DINOV2_N_HEADS[self.student_arch]) for p in self.backbone.keep_patch_list)
         
         # self.feature_align_fn = nn.ModuleList(nn.Conv2d(DINOV2_DIMS[self.encoder_arch], DINOV2_DIMS[self.student_arch], kernel_size=(1,1)) for _ in self.backbone.keep_patch_list)
+        # self.feature_interpolate_fn = nn.ModuleList(Interpolation2d(in_dim=768, out_dim=576, conv_kernel_size=3, pool_kernel_size=6, nonlinearity=nn.GELU)for _ in self.backbone.keep_patch_list)
         self.feature_interpolate_fn = Interpolation2d(in_dim=768, out_dim=576, conv_kernel_size=3, pool_kernel_size=6, nonlinearity=nn.GELU)
         self.feature_align_fn = nn.ModuleList(nn.Conv2d(DINOV2_DIMS[self.student_arch], 576, kernel_size=(1,1)) for _ in self.backbone.keep_patch_list)
         
@@ -259,7 +260,7 @@ class DistillationModel(pl.LightningModule):
             with torch.no_grad():
                 t_t, t_f, out_pred_prob, keep_zip = self.backbone.eval()(x, role='teacher', mode='distill')
             distill_t_token, distill_t_feature = get_spatial_feture_list(keep_zip)
-            interpolated_t_feature = [self.feature_interpolate_fn(feature.reshape(-1, 16, 16, 768))for feature in distill_t_feature]
+            interpolated_t_feature = [self.feature_interpolate_fn[i](feature.reshape(-1, 16, 16, 768))for i, feature in enumerate(distill_t_feature)]
             interpolated_t_feature = torch.cat(interpolated_t_feature, dim=0)
             s_t, s_f, s_f_zip = self.student(self.resize_fn(x), role='student', mode='distill')
             distill_s_feature = torch.cat([self.feature_align_fn[i](s_[:, 1:].permute(0,2,1).reshape(-1, 384, 11, 11)) for i, s_ in enumerate(s_f_zip)], dim=0)

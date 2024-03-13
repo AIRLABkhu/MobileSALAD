@@ -6,6 +6,9 @@ import pytorch_lightning.callbacks as pl_callbacks
 from pytorch_lightning.strategies import DeepSpeedStrategy
 from pytorch_lightning import strategies
 
+# for ema
+from torch_ema import ExponentialMovingAverage 
+
 from dyn_vpr_model import VPRModel
 from dataloaders.GSVCitiesDataloader import GSVCitiesDataModule
 
@@ -29,11 +32,11 @@ def load_pre_checkpoint(dir_path='weights/dino_salad.ckpt'):
             for key, val in pre_dict.items() 
             if 'backbone.' in key
         },
-        # **{
-        #     f'{key.replace("t_aggregator.", "")}': val 
-        #     for key, val in pre_dict.items() 
-        #     if 'aggregator.' in key
-        # },
+        **{
+            f'{key.replace("t_aggregator.", "")}': val 
+            for key, val in pre_dict.items() 
+            if 'aggregator.' in key
+        },
     })
 
     for i, selector in enumerate(model.backbone.selectors):
@@ -65,6 +68,10 @@ if __name__ == '__main__':
 
     parser.add_argument('--masking-ratio', type=float, default=0.2)
     parser.add_argument('--prun-loc', type=int, nargs='+', default=[8,9,10])
+    
+    parser.add_argument('--distill-lambda', type=float, default=1)
+    
+    parser.add_argument('--num-register', type=int, default=0)
 
     parser.add_argument('--load-pre', action='store_true')
 
@@ -103,6 +110,7 @@ if __name__ == '__main__':
             'return_token': True,
             'norm_layer': True,
             'masking_ratio': args.masking_ratio,
+            'num_register_tokens': args.num_register,
         },
 
         teacher_arch = backbone_arch,
@@ -111,6 +119,7 @@ if __name__ == '__main__':
             'return_token' : True,
             'norm_layer': True,
             'num_trainable_blocks' : 0,
+            'num_register_tokens': args.num_register
         },
         
         agg_arch='SALAD',
@@ -138,7 +147,8 @@ if __name__ == '__main__':
         miner_name='MultiSimilarityMiner', # example: TripletMarginMiner, MultiSimilarityMiner, PairMarginMiner
         miner_margin=0.1,
         faiss_gpu=True,
-        faiss_device=args.device
+        faiss_device=args.device,
+        distill_lambda = args.distill_lambda
     )
 
     if args.load_pre:

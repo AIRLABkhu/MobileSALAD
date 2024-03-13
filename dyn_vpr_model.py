@@ -4,6 +4,11 @@ import torch
 from torch import nn
 from torch.nn.parameter import Parameter
 from torch.optim import lr_scheduler, optimizer
+import timm
+# from timm.utils.model_ema import ModelEmaV2
+
+from utils import ModelEmaV2
+from copy import deepcopy
 
 import utils
 from models import helper
@@ -46,7 +51,8 @@ class VPRModel(pl.LightningModule):
         miner_name='MultiSimilarityMiner', 
         miner_margin=0.1,
         faiss_gpu=False,
-        faiss_device=0
+        faiss_device=0,
+        distill_lambda=1,
     ):
         super().__init__()
 
@@ -79,17 +85,20 @@ class VPRModel(pl.LightningModule):
         self.loss_fn = utils.get_loss(loss_name)
         self.miner = utils.get_miner(miner_name, miner_margin)
         self.batch_acc = [] # we will keep track of the % of trivial pairs/triplets at the loss level 
-        self.criterion = torch.nn.L1Loss()
         self.faiss_gpu = faiss_gpu
         self.faiss_device = faiss_device
+        self.distill_lambda = distill_lambda
         
         # ----------------------------------
         # get the backbone and the aggregator
         self.backbone = helper.get_backbone(backbone_arch, backbone_config)
         self.aggregator = helper.get_aggregator(agg_arch, agg_config)
+        
+        self.teacher = ModelEmaV2(self.backbone, device=self.faiss_device)
+        self.t_aggregator = ModelEmaV2(self.aggregator, device=self.faiss_device)
         # self.t_aggregator = helper.get_aggregator(agg_arch, agg_config)
-        if self.teacher_arch is not None:
-            self.teacher = helper.get_teacher(teacher_arch, teacher_config)
+        # if self.teacher_arch is not None:
+            # self.teacher = helper.get_teacher(teacher_arch, teacher_config)
 
         # For validation in Lightning v2.0.0
         self.val_outputs = []
@@ -99,10 +108,10 @@ class VPRModel(pl.LightningModule):
         if self.training:
             s_t, s_f, s_prev_decision, s_out_pred_prob = self.backbone(x)
             with torch.no_grad():
-                t_t, t_f = self.teacher(x)
-                # t_desc = self.t_aggregator((t_f, t_t))
+                t_t, t_f, _, _ = self.teacher.module(x)
+                t_desc = self.t_aggregator.module((t_f, t_t))
 
-            return self.aggregator((s_f, s_t)), self.aggregator((t_f, t_t)), s_prev_decision, s_out_pred_prob
+            return self.aggregator((s_f, s_t)), t_desc, s_prev_decision, s_out_pred_prob
         else:
             p_t, p_f, _, _ = self.backbone(x)
             return self.aggregator((p_f, p_t))
@@ -111,6 +120,8 @@ class VPRModel(pl.LightningModule):
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
         # yield self.backbone.model.pos_embed
         yield from self.backbone.model.blocks[self.backbone.num_trainable_blocks[0]:].parameters(recurse=recurse)
+        if self.backbone.model.regiester_tokens is not None:
+            yield self.backbone.model.register_tokens
         yield from self.backbone.model.norm.parameters(recurse=recurse)
         # yield from self.backbone.model.fc_norm.parameters(recurse=recurse)
         # yield from self.backbone.model.head_drop.parameters(recurse=recurse)
@@ -199,9 +210,17 @@ class VPRModel(pl.LightningModule):
             pos_ratio = score.mean(dim=1)
             pred_loss = pred_loss + ((pos_ratio - keep_ratio[i]) ** 2).mean()
 
-        loss = loss + distill_loss + pred_loss
+        loss = loss + self.distill_lambda * distill_loss + pred_loss
     
         return loss
+    
+    # for ema
+    def on_train_start(self):
+        self.teacher.set(self.backbone)
+        self.t_aggregator.set(self.aggregator)
+        
+        self.backbone.prepare_registers(self.backbone.model.num_register_tokens)
+        self.teacher.module.prepare_registers(self.teacher.module.model.num_register_tokens)
     
     # This is the training step that's executed at each iteration
     def training_step(self, batch, batch_idx):
@@ -231,6 +250,11 @@ class VPRModel(pl.LightningModule):
         loss = self.loss_function(s_desc, t_desc, labels, s_out_pred_prob, log_accuracy=True) 
         self.log('loss', loss.item(), logger=True, prog_bar=True)
         return {'loss': loss}
+    
+    # for ema
+    def on_after_backward(self):
+        self.teacher.update(self.backbone)
+        self.t_aggregator.update(self.aggregator)
     
     def on_train_epoch_end(self):
         # we empty the batch_acc list for next epoch
