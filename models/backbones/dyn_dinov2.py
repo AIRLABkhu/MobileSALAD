@@ -66,12 +66,14 @@ class Dyn_DINOv2(nn.Module):
             norm_layer=False,
             return_token=False,
             masking_ratio: float= 0.2,
+            num_register_tokens: int=0,
         ):
         super().__init__()
 
         assert model_name in DINOV2_ARCHS.keys(), f'Unknown model name {model_name}'
         # self.model = torch.hub.load('facebookresearch/dinov2', model_name)  # without policy
         self.model = torch.hub.load('dinov2', model_name, source='local')  # with and without policy
+        self.model.num_register_tokens = num_register_tokens
         self.num_channels = DINOV2_ARCHS[model_name]
         self.num_trainable_blocks = num_trainable_blocks
         self.norm_layer = norm_layer
@@ -94,35 +96,50 @@ class Dyn_DINOv2(nn.Module):
         # Dynamic ViT Precitor
         self.selectors = nn.ModuleList([PredictorLG(embed_dim=self.num_channels) for _ in self.num_trainable_blocks])
         self.align_fn = nn.Identity()
+        
+        if self.model.num_register_tokens > 0:
+            self.prepare_registers(self.model.num_register_tokens)
+        
+    def prepare_registers(self, num_registers: int, init: bool=True):
+        assert num_registers > 0
+        reg_tokens = self.model.cls_token.data.clone()
+        reg_tokens = reg_tokens.repeat(1, num_registers, 1)
+        
+        if init:
+            nn.init.normal_(reg_tokens, std=1e-6)
+        
+        self.model.num_register_tokens = num_registers
+        self.model.register_tokens = nn.Parameter(reg_tokens)
 
     def forward(self, x, role: Literal['student, teacher']='teacher', mode: Literal['pruning', 'distill']='pruning'):
-        x = self.model.prepare_tokens_with_masks(x)
-        B, NP, DIM = x.shape # NP means number of patch include token ( 256 + 1 )
+        x = self.model.prepare_tokens_with_masks(x) # after this, x contain register tokens --> ([cls], [reg], [feature])
+        B, NP, DIM = x.shape # NP means number of patch include token ( 256 + 1 ) 
+        # maybe if you give the parameter "num_register_tokens", the NP would be (1 + num_reigster_tokens + feature_tokens)
         
         out_pred_prob = []
         keep_zip = []
-        prev_decision = torch.ones(B, NP-1, 1, dtype=x.dtype, device=x.device)
-
+        prev_decision = torch.ones(B, NP-(1 + self.model.num_register_tokens), 1, dtype=x.dtype, device=x.device)
+        
         policy = torch.ones(B, NP, 1, dtype=x.dtype, device=x.device)
         for i, blk in enumerate(self.model.blocks):
             if role == 'teacher':
             # early blocks are frozen
                 if i < self.num_trainable_blocks[0]:
-                    with torch.no_grad():
-                        if self.training:
-                            x = blk(x, policy)
-                        else:
+                    if self.training:
+                        x = blk(x, policy)
+                    else:
+                        with torch.no_grad():
                             x = blk(x)
                 # pruning 
                 elif i in self.num_trainable_blocks:
-                    spatial_x = x[:, 1:] # except global token
+                    spatial_x = x[:, 1 + self.model.num_register_tokens:] # except global token
                     idx = self.num_trainable_blocks.index(i)
                     pred_score = self.selectors[idx](spatial_x, prev_decision).reshape(B, -1, 2) # we will use gumble_topk so we need just 1 dimension
 
                     if self.training:
                         hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * prev_decision
-                        out_pred_prob.append(hard_keep_decision.reshape(B, NP-1))
-                        token_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
+                        out_pred_prob.append(hard_keep_decision.reshape(B, NP-(1+self.model.num_register_tokens)))
+                        token_policy = torch.ones(B, 1 + self.model.num_register_tokens, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)  # TODO: complete
                         policy = torch.cat([token_policy, hard_keep_decision], dim=1)
                         x = blk(x, policy=policy, return_attention=False)
                         prev_decision = hard_keep_decision
@@ -133,8 +150,9 @@ class Dyn_DINOv2(nn.Module):
                             score = pred_score[:,:,0]
                             num_keep_node = self.keep_patch_list[idx]
                             keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
-                            token_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
-                            now_policy = torch.cat([token_policy, keep_policy + 1], dim=1)
+                            # token_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)  # TODO: complete
+                            token_policy = torch.arange(1 + self.model.num_register_tokens, dtype=keep_policy.dtype, device=keep_policy.device).repeat(B, 1)
+                            now_policy = torch.cat([token_policy, keep_policy + (1 + self.model.num_register_tokens)], dim=1)  # TODO: complete
                             x = batch_index_select(x, now_policy)
                             prev_decision = batch_index_select(prev_decision, keep_policy)
                             x = blk(x, return_attention=False)
@@ -152,8 +170,8 @@ class Dyn_DINOv2(nn.Module):
                             out_pred_prob.append(keeping_patch)
                             
                             keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
-                            token_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
-                            now_policy = torch.cat([token_policy, keep_policy + 1], dim=1)
+                            token_policy = torch.arange(1 + self.model.num_register_tokens, dtype=keep_policy.dtype, device=keep_policy.device).repeat(B, 1)  # TODO: complete
+                            now_policy = torch.cat([token_policy, keep_policy + (1 + self.model.num_register_tokens)], dim=1)  # TODO:
                             x = batch_index_select(x, now_policy)
                             prev_decision = batch_index_select(prev_decision, keep_policy)
                             x = blk(x, return_attention=False)
@@ -176,7 +194,7 @@ class Dyn_DINOv2(nn.Module):
         x = self.align_fn(x)
             
         t = x[:, 0]
-        f = x[:, 1:]
+        f = x[:, 1 + self.model.num_register_tokens:]
         
         if self.training:
             patches_row = int(f.size(1) ** 0.5)

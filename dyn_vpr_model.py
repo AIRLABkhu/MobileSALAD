@@ -96,9 +96,6 @@ class VPRModel(pl.LightningModule):
         
         self.teacher = ModelEmaV2(self.backbone, device=self.faiss_device)
         self.t_aggregator = ModelEmaV2(self.aggregator, device=self.faiss_device)
-        # self.t_aggregator = helper.get_aggregator(agg_arch, agg_config)
-        # if self.teacher_arch is not None:
-            # self.teacher = helper.get_teacher(teacher_arch, teacher_config)
 
         # For validation in Lightning v2.0.0
         self.val_outputs = []
@@ -120,7 +117,7 @@ class VPRModel(pl.LightningModule):
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
         # yield self.backbone.model.pos_embed
         yield from self.backbone.model.blocks[self.backbone.num_trainable_blocks[0]:].parameters(recurse=recurse)
-        if self.backbone.model.regiester_tokens is not None:
+        if self.backbone.model.register_tokens is not None:
             yield self.backbone.model.register_tokens
         yield from self.backbone.model.norm.parameters(recurse=recurse)
         # yield from self.backbone.model.fc_norm.parameters(recurse=recurse)
@@ -219,8 +216,8 @@ class VPRModel(pl.LightningModule):
         self.teacher.set(self.backbone)
         self.t_aggregator.set(self.aggregator)
         
-        self.backbone.prepare_registers(self.backbone.model.num_register_tokens)
-        self.teacher.module.prepare_registers(self.teacher.module.model.num_register_tokens)
+        # self.backbone.prepare_registers(self.backbone.model.num_register_tokens)
+        # self.teacher.module.prepare_registers(self.teacher.module.model.num_register_tokens)
     
     # This is the training step that's executed at each iteration
     def training_step(self, batch, batch_idx):
