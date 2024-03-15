@@ -99,7 +99,7 @@ def get_spatial_feature(mapped_idx_list, prob_list, x_list):
         B, NP= idx.shape
         _, _, D = x.shape
         t = x[:, 0]
-        f = x[:, 1:]
+        f = x[:, -NP:]
         empty_tensor = torch.zeros(B, 256, D).to(device=x.device)
         expanded_idx = idx.unsqueeze(-1).expand(B, NP, D)
         expanded_prob = prob.unsqueeze(-1).expand(B, NP, D)
@@ -238,12 +238,8 @@ class DistillationModel(pl.LightningModule):
         
         backbone_num_heads = DINOV2_N_HEADS[self.encoder_arch]
         student_num_heads = DINOV2_N_HEADS[self.student_arch]
-        # self.attn_align_fn = nn.ModuleList(CBAM(input_patch=p+1, input_dim=DINOV2_N_HEADS[self.encoder_arch], \
-        #     output_patch=self.backbone.keep_patch_list[-1]+1, output_dim=DINOV2_N_HEADS[self.student_arch]) for p in self.backbone.keep_patch_list)
         
-        # self.feature_align_fn = nn.ModuleList(nn.Conv2d(DINOV2_DIMS[self.encoder_arch], DINOV2_DIMS[self.student_arch], kernel_size=(1,1)) for _ in self.backbone.keep_patch_list)
-        # self.feature_interpolate_fn = nn.ModuleList(Interpolation2d(in_dim=768, out_dim=576, conv_kernel_size=3, pool_kernel_size=6, nonlinearity=nn.GELU)for _ in self.backbone.keep_patch_list)
-        self.feature_interpolate_fn = Interpolation2d(in_dim=768, out_dim=576, conv_kernel_size=3, pool_kernel_size=6, nonlinearity=nn.GELU)
+        self.feature_interpolate_fn = nn.ModuleList(Interpolation2d(in_dim=768, out_dim=576, conv_kernel_size=3, pool_kernel_size=6, nonlinearity=nn.GELU)for _ in self.backbone.keep_patch_list)
         self.feature_align_fn = nn.ModuleList(nn.Conv2d(DINOV2_DIMS[self.student_arch], 576, kernel_size=(1,1)) for _ in self.backbone.keep_patch_list)
         
         self.student.align_fn = nn.Linear(DINOV2_DIMS[self.student_arch], DINOV2_DIMS[self.encoder_arch])

@@ -27,16 +27,16 @@ def load_pre_checkpoint(dir_path='weights/dino_salad.ckpt'):
     # 킹갓제너럴코딩천재 근혁좌.
     new_dict = OrderedDict({
         **pre_dict,
-        **{
-            f'teacher.{key.replace("backbone.", "")}': val 
-            for key, val in pre_dict.items() 
-            if 'backbone.' in key
-        },
-        **{
-            f'{key.replace("t_aggregator.", "")}': val 
-            for key, val in pre_dict.items() 
-            if 'aggregator.' in key
-        },
+        # **{
+        #     f'teacher.{key.replace("backbone.", "")}': val 
+        #     for key, val in pre_dict.items() 
+        #     if 'backbone.' in key
+        # },
+        # **{
+        #     f'{key.replace("t_aggregator.", "")}': val 
+        #     for key, val in pre_dict.items() 
+        #     if 'aggregator.' in key
+        # },
     })
 
     for i, selector in enumerate(model.backbone.selectors):
@@ -146,7 +146,7 @@ if __name__ == '__main__':
         loss_name='MultiSimilarityLoss',
         miner_name='MultiSimilarityMiner', # example: TripletMarginMiner, MultiSimilarityMiner, PairMarginMiner
         miner_margin=0.1,
-        faiss_gpu=True,
+        faiss_gpu=False,
         faiss_device=args.device,
         distill_lambda = args.distill_lambda
     )

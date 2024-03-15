@@ -116,7 +116,7 @@ class VPRModel(pl.LightningModule):
     @utils.yield_as(list)
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
         # yield self.backbone.model.pos_embed
-        yield from self.backbone.model.blocks[self.backbone.num_trainable_blocks[0]:].parameters(recurse=recurse)
+        yield from self.backbone.model.blocks.parameters(recurse=recurse)
         if self.backbone.model.register_tokens is not None:
             yield self.backbone.model.register_tokens
         yield from self.backbone.model.norm.parameters(recurse=recurse)
@@ -320,7 +320,7 @@ class VPRModel(pl.LightningModule):
                 print_results=True,
                 dataset_name=val_set_name,
                 faiss_gpu=self.faiss_gpu,
-                faiss_device = self.faiss_device
+                # faiss_device = self.faiss_device
             )
             del r_list, q_list, feats, num_references, positives
 
