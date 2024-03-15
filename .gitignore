@@ -162,5 +162,5 @@ cython_debug/
 *.code-workspace
 temp
 *temp*.*
-logs
+logs*
 weights
