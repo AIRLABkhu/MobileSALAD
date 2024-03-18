@@ -117,7 +117,7 @@ class VPRModel(pl.LightningModule):
     def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
         # yield self.backbone.model.pos_embed
         yield from self.backbone.model.blocks.parameters(recurse=recurse)
-        if self.backbone.model.register_tokens is not None:
+        if self.backbone_config['num_register_tokens'] != 0:
             yield self.backbone.model.register_tokens
         yield from self.backbone.model.norm.parameters(recurse=recurse)
         # yield from self.backbone.model.fc_norm.parameters(recurse=recurse)

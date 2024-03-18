@@ -250,6 +250,9 @@ class DistillationModel(pl.LightningModule):
         # For validation in Lightning v2.0.0
         self.val_outputs = []
         
+    def on_train_start(self):
+        print(self.backbone.model.register_tokens)
+        
     # the forward pass of the lightning model
     def forward(self, x):
         if self.training:
