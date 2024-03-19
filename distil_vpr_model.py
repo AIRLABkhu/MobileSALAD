@@ -69,14 +69,19 @@ def mapping_index(idx_list):
     
     # Sort target index and cache sorted indices
     sorted_target_idx = torch.sort(target_idx, dim=1)[0]
+    # sorted_mid_idx = torch.sort(mid_dix, dim=1)[0]
     
     # Create mapping for mid index
     mid_mapping = sorted_target_idx.gather(dim=1, index=mid_idx)
+    sorted_mid_idx = torch.sort(mid_mapping, dim=1)[0]
+    # mid_mapping = torch.sort(mid_mapping, dim=1)[0]
     
     # Create mapping for final index
-    final_mapping = mid_mapping.gather(dim=1, index=final_idx)
+    final_mapping = sorted_mid_idx.gather(dim=1, index=final_idx)
+    sorted_final_idx = torch.sort(final_mapping, dim=1)[0]
+    # final_mapping = torch.sort(final_mapping, dim=1)[0]
     
-    return [idx_list[0], mid_mapping, final_mapping]
+    return [sorted_target_idx, mid_mapping, final_mapping]
 
 def get_spatial_feature(mapped_idx_list, prob_list, x_list):
     """_summary_
