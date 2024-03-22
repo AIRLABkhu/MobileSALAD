@@ -76,9 +76,8 @@ def mapping_index(idx_list):
     
     # Create mapping for final index
     final_mapping = sorted_mid_idx.gather(dim=1, index=final_idx)
-    # sorted_final_idx = torch.sort(final_mapping, dim=1)[0]
     
-    return [sorted_target_idx, mid_mapping, final_mapping]
+    return [target_idx, mid_mapping, final_mapping]
 
 def get_spatial_feature(mapped_idx_list, prob_list, x_list):
     """_summary_
@@ -102,10 +101,14 @@ def get_spatial_feature(mapped_idx_list, prob_list, x_list):
         _, _, D = x.shape
         t = x[:, 0]
         f = x[:, -NP:]
+        
+        sorted_idx = torch.argsort(idx).unsqueeze(-1).expand(f.shape)
+
         empty_tensor = torch.zeros(B, 256, D).to(device=x.device)
         expanded_idx = idx.unsqueeze(-1).expand(B, NP, D)
         expanded_prob = prob.unsqueeze(-1).expand(B, NP, D)
-
+        
+        f = torch.gather(f, 1, sorted_idx)
         empty_tensor.scatter_(1, expanded_idx, expanded_prob * f)
         spatial_feature_list.append(empty_tensor)
         token_list.append(t)
@@ -209,6 +212,7 @@ class DistillationModel(pl.LightningModule):
         # Train hyperparameters
         self.lr = lr
         self.optimizer = optimizer
+        self.reg_optimizer = optimizer
         self.weight_decay = weight_decay
         self.momentum = momentum
         self.lr_sched = lr_sched
@@ -252,8 +256,8 @@ class DistillationModel(pl.LightningModule):
         # For validation in Lightning v2.0.0
         self.val_outputs = []
         
-    def on_train_start(self):
-        print(self.backbone.model.register_tokens)
+    # def on_train_start(self):
+        # print(self.backbone.model.register_tokens)
         
     # the forward pass of the lightning model
     def forward(self, x):

@@ -98,12 +98,14 @@ class Dyn_DINOv2(nn.Module):
         self.align_fn = nn.Identity()
         
         if self.model.num_register_tokens > 0:
-            self.prepare_registers(self.model.num_register_tokens)
+            self.prepare_registers(self.model.num_register_tokens, False)
         
     def prepare_registers(self, num_registers: int, init: bool=True):
         assert num_registers > 0
-        reg_tokens = self.model.cls_token.data.clone()
-        reg_tokens = reg_tokens.repeat(1, num_registers, 1)
+        reg_tokens = torch.cat([
+            self.model.cls_token.data.clone()
+            for _ in range(num_registers)
+        ], dim=1)
         
         if init:
             nn.init.normal_(reg_tokens, std=1e-6)

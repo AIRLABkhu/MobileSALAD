@@ -82,6 +82,9 @@ class VPRModel(pl.LightningModule):
         
         self.save_hyperparameters() # write hyperparams into a file
         
+        # for multi-optimizer
+        self.automatic_optimization = False
+        
         self.loss_fn = utils.get_loss(loss_name)
         self.miner = utils.get_miner(miner_name, miner_margin)
         self.batch_acc = [] # we will keep track of the % of trivial pairs/triplets at the loss level 
@@ -112,62 +115,89 @@ class VPRModel(pl.LightningModule):
         else:
             p_t, p_f, _, _ = self.backbone(x)
             return self.aggregator((p_f, p_t))
+        
+    @property
+    def has_registers(self):
+        return self.backbone_config['num_register_tokens'] != 0
 
     @utils.yield_as(list)
-    def parameters(self, recurse: bool=True) -> Iterator[Parameter]:
+    def parameters(self, recurse: bool=True, return_registers: bool=True) -> Iterator[Parameter]:
         # yield self.backbone.model.pos_embed
         yield from self.backbone.model.blocks.parameters(recurse=recurse)
-        if self.backbone_config['num_register_tokens'] != 0:
-            yield self.backbone.model.register_tokens
+        if return_registers:
+            if self.has_registers:
+                yield self.backbone.model.register_tokens
         yield from self.backbone.model.norm.parameters(recurse=recurse)
         # yield from self.backbone.model.fc_norm.parameters(recurse=recurse)
         # yield from self.backbone.model.head_drop.parameters(recurse=recurse)
         yield from self.backbone.selectors.parameters(recurse=recurse) # predictor parameter 추가
         yield from self.aggregator.parameters(recurse=recurse)
+        
+    def registers(self) -> Iterator[Parameter]:
+        if self.has_registers:
+            return [self.backbone.model.register_tokens]
+        else:
+            return None
     
     # configure the optimizer 
     def configure_optimizers(self):
-        if self.optimizer.lower() == 'sgd':
-            optimizer = torch.optim.SGD(
-                self.parameters(), 
-                lr=self.lr, 
-                weight_decay=self.weight_decay, 
-                momentum=self.momentum
-            )
-        elif self.optimizer.lower() == 'adamw':
-            optimizer = torch.optim.AdamW(
-                self.parameters(), 
-                lr=self.lr, 
-                weight_decay=self.weight_decay
-            )
-        elif self.optimizer.lower() == 'adam':
-            optimizer = torch.optim.Adam(
-                self.parameters(), 
-                lr=self.lr, 
-                weight_decay=self.weight_decay
-            )
-        else:
-            raise ValueError(f'Optimizer {self.optimizer} has not been added to "configure_optimizers()"')
+        def make_optimizer(params, lr=None):
+            if lr is None:
+                lr = self.lr
+            if self.optimizer.lower() == 'sgd':
+                optimizer = torch.optim.SGD(
+                    params, lr=lr, 
+                    weight_decay=self.weight_decay, 
+                    momentum=self.momentum
+                )
+            elif self.optimizer.lower() == 'adamw':
+                optimizer = torch.optim.AdamW(
+                    params, lr=lr, 
+                    weight_decay=self.weight_decay
+                )
+            elif self.optimizer.lower() == 'adam':
+                optimizer = torch.optim.Adam(
+                    params, lr=lr, 
+                    weight_decay=self.weight_decay
+                )
+            else:
+                raise ValueError(f'Optimizer {self.optimizer} has not been added to "configure_optimizers()"')
+            
+            return optimizer
+                    
+        def make_scheduler(opt):
+            if self.lr_sched.lower() == 'multistep':
+                scheduler = lr_scheduler.MultiStepLR(opt, milestones=self.lr_sched_args['milestones'], gamma=self.lr_sched_args['gamma'])
+            elif self.lr_sched.lower() == 'cosine':
+                scheduler = lr_scheduler.CosineAnnealingLR(opt, self.lr_sched_args['T_max'])
+            elif self.lr_sched.lower() == 'linear':
+                scheduler = lr_scheduler.LinearLR(
+                    opt,
+                    start_factor=self.lr_sched_args['start_factor'],
+                    end_factor=self.lr_sched_args['end_factor'],
+                    total_iters=self.lr_sched_args['total_iters']
+                )
+            return scheduler
         
-        if self.lr_sched.lower() == 'multistep':
-            scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=self.lr_sched_args['milestones'], gamma=self.lr_sched_args['gamma'])
-        elif self.lr_sched.lower() == 'cosine':
-            scheduler = lr_scheduler.CosineAnnealingLR(optimizer, self.lr_sched_args['T_max'])
-        elif self.lr_sched.lower() == 'linear':
-            scheduler = lr_scheduler.LinearLR(
-                optimizer,
-                start_factor=self.lr_sched_args['start_factor'],
-                end_factor=self.lr_sched_args['end_factor'],
-                total_iters=self.lr_sched_args['total_iters']
-            )
-
-        return [optimizer], [scheduler]
+        model_params = self.parameters(return_registers=False)
+        reg_params = self.registers()
+        
+        optimizers, schedulers = [], []
+        
+        optimizers.append(make_optimizer(model_params))
+        schedulers.append(make_scheduler(optimizers[-1]))
+        
+        if self.has_registers:
+            optimizers.append(make_optimizer(reg_params, lr=self.lr * 100.0))
+            schedulers.append(make_scheduler(optimizers[-1]))    
+        
+        return optimizers, schedulers
     
-    # configure the optizer step, takes into account the warmup stage
-    def optimizer_step(self,  epoch, batch_idx, optimizer, optimizer_closure):
-        # warm up lr
-        optimizer.step(closure=optimizer_closure)
-        self.lr_schedulers().step()
+    # # configure the optizer step, takes into account the warmup stage
+    # def optimizer_step(self,  epoch, batch_idx, optimizer, optimizer_closure):
+    #     # warm up lr
+    #     optimizer.step(closure=optimizer_closure)
+    #     self.lr_schedulers().step()
         
     #  The loss function call (this method will be called at each training iteration)
     def loss_function(self, s_desc, t_desc, labels, s_out_pred_prob, log_accuracy: bool=False):
@@ -221,6 +251,7 @@ class VPRModel(pl.LightningModule):
     
     # This is the training step that's executed at each iteration
     def training_step(self, batch, batch_idx):
+        opt1, opt2 = self.optimizers()
         places, labels = batch
         
         # Note that GSVCities yields places (each containing N images)
@@ -245,6 +276,17 @@ class VPRModel(pl.LightningModule):
 
         # Call the loss_function we defined above
         loss = self.loss_function(s_desc, t_desc, labels, s_out_pred_prob, log_accuracy=True) 
+        
+        opt1.zero_grad()
+        opt2.zero_grad()
+        self.manual_backward(loss)
+        opt1.step()
+        opt2.step()
+        
+        sch1, sch2 = self.lr_schedulers()
+        sch1.step()
+        sch2.step()
+        
         self.log('loss', loss.item(), logger=True, prog_bar=True)
         return {'loss': loss}
     
